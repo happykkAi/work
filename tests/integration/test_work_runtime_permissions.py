@@ -59,6 +59,10 @@ def test_runtime_authority_writes_denied_but_scoped_manager_and_business_work():
     controls = []
     with psycopg.connect(admin_url, autocommit=True) as admin:
         try:
+            admin.execute("CREATE TABLE work_private_business(organization_id TEXT,body TEXT)")
+            admin.execute(
+                "INSERT INTO work_private_business VALUES('org-b','synthetic private record')"
+            )
             for key, role in roles.items():
                 password = uuid.uuid4().hex
                 admin.execute(
@@ -121,6 +125,7 @@ def test_runtime_authority_writes_denied_but_scoped_manager_and_business_work():
                     "SELECT organization_id FROM work_memberships"
                 ).fetchall() == [("org-a",)]
                 attacks = (
+                    "SELECT * FROM work_private_business",
                     "UPDATE work_organization_policies SET available=TRUE",
                     "INSERT INTO work_memberships VALUES('org-b','shared-user','owner','active',9)",
                     "DELETE FROM work_budget_counters",

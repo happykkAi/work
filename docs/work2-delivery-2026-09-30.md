@@ -26,7 +26,7 @@ No changes to the Hub site are in scope.
 | Prior candidate imported and preserved | PASS |
 | Multi-process active-run recovery | Focused real-PG PASS; final gates pending |
 | Runtime policy/counter write boundary | Focused real-PG PASS; final gates pending |
-| Legacy business migration/reconciliation | NOT_RUN |
+| Legacy business migration/reconciliation | Data-preservation rehearsal PASS; activation NOT_RUN |
 | Browser institution/project/task/persistence/file flow | NOT_RUN |
 | Version upgrade and two recovery scenarios | NOT_RUN |
 | Final candidate full gates/review | NOT_RUN |
@@ -135,3 +135,38 @@ registered locally (no model call). Removing the skip first reproduced the
 TypeError, then the missing-provider assertion; corrected test fixtures and the
 entire agent-manager file returned **95 passed**, exit 0. Evidence:
 `.superpowers/delivery/agent-manager-unskipped-final.log`.
+
+## Legacy data-preservation rehearsal (not activation)
+
+The offline owner-only import validates an explicit table catalog, identifiers,
+relationships, institution/member states, integer quota usage and historical
+attempt identifiers before destination writes. Original object byte hashes and
+parsed-text hashes are verified separately; copying verifies the resulting bytes.
+Unknown tables, invalid relationships/states and corrupt or missing files fail
+explicitly. Pending actions, outbox and old tasks remain non-executable history;
+live tokens/verification/invitations are invalidated, not restored.
+
+Each historical object has a durable checkpoint. A fixed synthetic snapshot
+rehearses interruption/resume and repeated import. Existing authority users,
+memberships and counters must match exactly; conflicting state fails and rolls
+back the authority transaction, without overwriting access or consumed quota.
+The three conflict scenarios first failed to reject on real PostgreSQL. Reimport
+of a tampered stored record also first failed; comparison now includes the actual
+stored payload, not only its digest column.
+
+Provisioning no longer grants SELECT automatically to every `work_%` table.
+Only the existing RLS read contract is allowlisted; new historical/private
+business tables remain inaccessible to runtime roles. A real restricted-role
+test proves a private record from another institution cannot be read, while
+legitimate runtime and scoped manager operations still succeed.
+
+This phase returns `IMPORTED_NOT_ACTIVATED`. Identity mapping, accessible migrated
+sessions/files, project business activation, actual MariaDB source export and
+browser acceptance remain **NOT_RUN**, not PASS. No production data or database
+was used. Dedicated PostgreSQL evidence:
+`candidate/happykkAi-work-232030f/.superpowers/sdd/Work2_Octop_完整替换与持续升级计划_20260927/real-env-20260930/legacy-authority-conflicts-red-valid-fixture.log`,
+`.superpowers/delivery/legacy-reimport-tamper-red.log`
+and `.superpowers/delivery/legacy-preservation-and-permission-final.log`.
+The combined local import/unit/role gate returned **15 passed**, exit 0, no
+skipped; Ruff and strict Work-platform mypy returned 0. The serial CI PostgreSQL
+job now includes this import rehearsal.

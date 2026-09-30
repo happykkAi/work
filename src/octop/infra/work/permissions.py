@@ -16,6 +16,23 @@ _RUNTIME_FUNCTIONS = (
     "work_consume_handoff(JSONB)",
 )
 
+# New Work business tables are private until a separately scoped read contract exists.
+_RUNTIME_READ_TABLES = frozenset(
+    {
+        "work_schema_version",
+        "work_users",
+        "work_identities",
+        "work_memberships",
+        "work_agent_bindings",
+        "work_organization_policies",
+        "work_capabilities",
+        "work_runs",
+        "work_budget_counters",
+        "work_external_attempts",
+        "work_runtime_handoffs",
+    }
+)
+
 
 def provision_principal(
     database_url: str,
@@ -77,7 +94,7 @@ def provision_principal(
                     sql.Identifier(table), ident
                 )
             )
-            if table not in {"work_database_principals", "work_executors"} and kind != "manager":
+            if table in _RUNTIME_READ_TABLES and kind != "manager":
                 conn.execute(
                     sql.SQL("GRANT SELECT ON TABLE public.{} TO {}").format(
                         sql.Identifier(table), ident

@@ -96,4 +96,5 @@ jobs:
           uv run pytest -q -m postgresql \
             tests/integration/test_postgresql_control_plane.py \
             tests/integration/test_postgresql_checkpoint_history.py \
-            tests/integration/test_work_runtime_permissions.py
+            tests/integration/test_work_runtime_permissions.py \
+            tests/integration/test_work_legacy_import.py
