@@ -2,6 +2,7 @@ name: Work candidate checks
 
 on:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -65,6 +66,36 @@ jobs:
           OCTOP_SHA=$(python3 -c 'import json; print(json.load(open("deploy/work/source-manifest.example.json"))["source_repositories"]["octop_upstream"]["commit_sha"])')
           WORK_WHEEL=$(find dist/work-platform -maxdepth 1 -name 'work_platform-*.whl' -print -quit)
           python3 tools/work/verify_distribution.py "$WORK_WHEEL" --work-sha "$GITHUB_SHA" --octop-sha "$OCTOP_SHA" --output dist/work-platform/build-manifest.json
+
+      - name: Build and verify target-platform release image without publishing
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -f docker/Dockerfile \
+            --label org.opencontainers.image.source=https://github.com/happykkAi/work \
+            --label org.opencontainers.image.revision="$GITHUB_SHA" \
+            -t work2-candidate:"$GITHUB_SHA" .
+          docker run --rm --network none --entrypoint python work2-candidate:"$GITHUB_SHA" \
+            -c 'import octop, work_platform; from work_platform.authorization import issue_execution_context; print(issue_execution_context.__name__)'
+          docker run --rm --network none --entrypoint uv work2-candidate:"$GITHUB_SHA" \
+            pip check --python /app/.venv/bin/python
+          docker image inspect work2-candidate:"$GITHUB_SHA" \
+            --format '{{json .Id}} {{json .Architecture}} {{json .Config.Labels}}' \
+            > dist/work-platform/image-identity.txt
+          docker save work2-candidate:"$GITHUB_SHA" | gzip > dist/work-platform/runtime-linux-amd64.tar.gz
+          sha256sum dist/*.whl dist/*.tar.gz dist/work-platform/*.whl \
+            dist/work-platform/*.json dist/work-platform/image-identity.txt \
+            dist/work-platform/runtime-linux-amd64.tar.gz > dist/work-platform/artifacts.sha256
+
+      - name: Preserve checked release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: work2-candidate-${{ github.sha }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/work-platform/
+          if-no-files-found: error
+          retention-days: 7
 
   postgres:
     name: PostgreSQL authority and multi-process gates

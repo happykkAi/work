@@ -170,3 +170,16 @@ and `.superpowers/delivery/legacy-preservation-and-permission-final.log`.
 The combined local import/unit/role gate returned **15 passed**, exit 0, no
 skipped; Ruff and strict Work-platform mypy returned 0. The serial CI PostgreSQL
 job now includes this import rehearsal.
+
+## Target-platform build contract
+
+The Work CI release build now uses the existing Dockerfile and locked
+dependencies for `linux/amd64`, the observed production host architecture. It
+does not publish or deploy. The checked GitHub SHA is an image label; an isolated
+no-network import/dependency smoke test precedes image export. Wheel/sdist,
+source manifest, image identity and SHA-256 sums are retained as a CI artifact.
+PR builds identify their checked merge commit, not a falsely claimed final main
+commit. Manual dispatch allows the same gate to verify the actual merged main
+commit later. The pipeline ordering and portable Python release/tag also have
+regression contracts. Image construction/run and CI upload remain pending until
+their actual step results; a passing YAML contract is not an image acceptance.
