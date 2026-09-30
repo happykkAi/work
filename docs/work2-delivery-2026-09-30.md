@@ -118,3 +118,20 @@ by Octop. No tests, assertions or gates are removed. The first offline lock
 attempt could not resolve an uncached package; ordinary locked resolution
 succeeded. Final isolated verification and downstream build results are recorded
 against the new commit/CI run, not inherited from the failed run.
+
+Local isolated contracts with the newly built Work wheel returned exit 0:
+**16 passed, 45 subtests passed, no skipped**. `uv lock --project
+packages/work_platform --check` returned 0; the real pre-commit hook completed
+its static, change-aware tests and Dashboard build. Repair commit
+`8c31b7b344eef7cd2d2d436cda61fac5f7f42278` is pushed and read back from GitHub.
+Work CI run `36691825423` is the new candidate run; do not mark it passed while
+it is still running.
+
+The old skipped default-model forwarding test is restored without changing its
+assertions. Its fake configuration was not a dataclass, so security policy
+application failed; the test also had not registered its pinned model. A spy
+now invokes the real configuration constructor, with the synthetic model
+registered locally (no model call). Removing the skip first reproduced the
+TypeError, then the missing-provider assertion; corrected test fixtures and the
+entire agent-manager file returned **95 passed**, exit 0. Evidence:
+`.superpowers/delivery/agent-manager-unskipped-final.log`.
