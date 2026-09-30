@@ -99,3 +99,22 @@ and portable Python's fixed release URL disagreed with its fixed asset tag.
 These pipeline failures are corrected without removing checks. A serial real
 PostgreSQL CI job is added separately from the parallel unit gate.
 The draft is not merge, preproduction or production approval.
+
+## CI dependency and portable Python repair evidence
+
+Commit `acb12fd57a43c6a3133a532500c23d57948c13eb` installs the locked
+Dashboard dependencies before `make check-all`. It also aligns the portable
+Python download release and asset tag at `20260807` (Python `3.12.13`).
+Actual desktop run `36689054973` passed all four Darwin/Windows architecture
+jobs. Work run `36689054956` passed its real PostgreSQL/multi-process job and
+the full-stack gate, then failed in isolated contracts with exit 2: the separate
+Work-platform development environment had not declared the YAML parser used
+by the routing/isolation contract tests.
+
+The same isolated command reproduced two `ModuleNotFoundError: yaml`
+collection errors locally. The repair declares `pyyaml==6.0.3` in that project's
+dev dependencies and updates its own lock; this is the version already locked
+by Octop. No tests, assertions or gates are removed. The first offline lock
+attempt could not resolve an uncached package; ordinary locked resolution
+succeeded. Final isolated verification and downstream build results are recorded
+against the new commit/CI run, not inherited from the failed run.
