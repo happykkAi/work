@@ -3,7 +3,7 @@ import { Bell } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { buildDashboardNotifyWsUrl } from "../api/modules/wsNotifications";
+import { createDashboardNotifyWebSocket } from "../api/modules/wsNotifications";
 import { getAuthToken } from "../api/request";
 import { useAgent } from "../context/AgentContext";
 import { ExpertIcon } from "../pages/Experts/components/iconForName";
@@ -85,7 +85,7 @@ export function useDashboardPushToast(): void {
       }
       let socket: WebSocket;
       try {
-        socket = new WebSocket(buildDashboardNotifyWsUrl());
+        socket = createDashboardNotifyWebSocket();
       } catch {
         scheduleReconnect();
         return;

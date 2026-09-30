@@ -34,9 +34,9 @@ function isTrajectoryMetrics(value: unknown): value is TrajectoryMetrics {
   return typeof record.turns === "number" && typeof record.steps === "number";
 }
 
-function parseSseData(raw: MessageEvent<string>): unknown {
+function parseSseData(raw: string): unknown {
   try {
-    return JSON.parse(raw.data);
+    return JSON.parse(raw);
   } catch {
     return undefined;
   }
@@ -124,44 +124,48 @@ export function useTrajectorySession({
     sessionGenRef.current += 1;
     const fetchGen = sessionGenRef.current;
     let cancelled = false;
-    let source: EventSource | null = null;
+    let source: { close: () => void } | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let reconnectAttempt = 0;
 
-    const bindSource = (es: EventSource) => {
-      es.addEventListener("event", (raw) => {
-        const parsed = parseSseData(raw as MessageEvent<string>);
+    const handleFrame = (type: string, data: string) => {
+      if (type === "event") {
+        const parsed = parseSseData(data);
         if (!isTrajectoryEvent(parsed)) return;
         lastSeqRef.current = parsed.seq;
         setEvents((prev) => upsertByEventId(prev, parsed));
-      });
-      es.addEventListener("metrics", (raw) => {
-        const parsed = parseSseData(raw as MessageEvent<string>);
+      }
+      if (type === "metrics") {
+        const parsed = parseSseData(data);
         if (!isTrajectoryMetrics(parsed)) return;
         setMetrics(parsed);
-      });
-      es.onerror = () => {
-        es.close();
+      }
+    };
+
+    const scheduleReconnect = () => {
+      source?.close();
+      if (cancelled || fetchGen !== sessionGenRef.current) return;
+      const delay =
+        reconnectAttempt === 0
+          ? 0
+          : Math.min(1000 * 2 ** reconnectAttempt, 15_000);
+      reconnectAttempt += 1;
+      reconnectTimer = setTimeout(() => {
         if (cancelled || fetchGen !== sessionGenRef.current) return;
-        const delay =
-          reconnectAttempt === 0
-            ? 0
-            : Math.min(1000 * 2 ** reconnectAttempt, 15_000);
-        reconnectAttempt += 1;
-        reconnectTimer = setTimeout(() => {
-          if (cancelled || fetchGen !== sessionGenRef.current) return;
-          openStream(lastSeqRef.current);
-        }, delay);
-      };
+        openStream(lastSeqRef.current);
+      }, delay);
     };
 
     const openStream = (afterSeq?: number) => {
       if (cancelled) return;
       source?.close();
-      source = new EventSource(
-        trajectoryApi.streamUrl(agentId, threadId, afterSeq),
+      source = trajectoryApi.stream(
+        agentId,
+        threadId,
+        afterSeq,
+        handleFrame,
+        scheduleReconnect,
       );
-      bindSource(source);
     };
 
     setLoading(true);

@@ -7,7 +7,7 @@
  * Output is multi-cast to every registered UI listener.
  */
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { getAuthToken } from "../../../api/request";
+import { createAuthenticatedWebSocket } from "../../../api/modules/wsAuth";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -102,13 +102,11 @@ function generateId(): string {
 }
 
 function buildWsUrl(agentId: string, sessionId: string): string {
-  const token = getAuthToken();
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const base = `${protocol}://${
     window.location.host
   }/api/agents/${encodeURIComponent(agentId)}/terminal/ws`;
   const params = new URLSearchParams();
-  if (token) params.set("token", token);
   // Same id re-attaches to the backend shell.
   params.set("session_id", sessionId);
   return `${base}?${params.toString()}`;
@@ -252,7 +250,7 @@ function openWs(session: TerminalSession) {
   }
   let ws: WebSocket;
   try {
-    ws = new WebSocket(buildWsUrl(session.agentId, session.id));
+    ws = createAuthenticatedWebSocket(buildWsUrl(session.agentId, session.id));
   } catch (err) {
     console.error("[Terminal] Failed to create WebSocket:", err);
     setConnState(session, "error");

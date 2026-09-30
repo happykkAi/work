@@ -13,6 +13,8 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from work_platform.runtime_adapter import RuntimeBinding
+
 from octop.config import OctopConfig, load_config
 from octop.infra.agents.experts.catalog import ExpertCatalog, default_library_root
 from octop.infra.agents.manager import AgentManager
@@ -31,6 +33,7 @@ from octop.infra.setup.password_file import WIZARD_FILE_NAME
 from octop.infra.setup.wizard_tokens import WizardTokenStore
 from octop.infra.users.manager import UserManager
 from octop.infra.utils.paths import PathLayout
+from octop.infra.work.control_plane import WorkControlPlane
 
 if TYPE_CHECKING:
     from octop.infra.auth.sso.service import SsoService
@@ -41,6 +44,17 @@ logger = logging.getLogger(__name__)
 # Default 100 MiB per active log file before size-triggered rollover (in addition to daily).
 DEFAULT_LOG_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
+
+
+class RequestQueryRedaction(logging.Filter):
+    """Never retain request query strings in framework access/error logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                value.split("?", 1)[0] if isinstance(value, str) else value for value in record.args
+            )
+        return True
 
 
 class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -216,6 +230,9 @@ class AppRuntime:
     proactive_scheduler: ProactiveCareScheduler
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
+    work_control_plane: WorkControlPlane | None = None
+    work_execution_required: bool = False
+    work_entry_mode: bool = False
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
@@ -370,12 +387,45 @@ class OctopServer:
 
         configure_browser_idle_timeout(config.browser_idle_timeout_minutes)
 
+        work_control_url = os.environ.get("WORK_CONTROL_DATABASE_URL", "").strip()
+        work_runtime_id = os.environ.get("WORK_RUNTIME_ID", "").strip()
+        from octop.infra.work.routing import work_entry_mode_enabled  # noqa: PLC0415
+
+        work_entry_mode = work_entry_mode_enabled()
+        work_execution_required = bool(work_control_url or work_runtime_id)
+        work_control_plane = None
+        if work_control_url and work_runtime_id:
+            runtime_binding = None
+            if not work_entry_mode:
+                runtime_binding = RuntimeBinding.from_environment(
+                    runtime_id=work_runtime_id,
+                    database_role=config.database.user,
+                )
+            if runtime_binding is None and not work_entry_mode:
+                logger.error(
+                    "Work task execution is disabled until the local organization runtime "
+                    "binding is configured",
+                )
+            else:
+                work_control_plane = WorkControlPlane(
+                    work_control_url,
+                    work_runtime_id,
+                    expected_runtime_binding=runtime_binding,
+                )
+        elif work_control_url or work_runtime_id:
+            logger.error(
+                "Work task execution is disabled until both Work control database and runtime ID "
+                "are configured",
+            )
+
         registry = AgentManager(
             repos=self.services.repos,
             paths=self.paths,
             config=config,
             expert_catalog=self.expert_catalog,
             plugin_manager=self.plugin_manager,
+            work_control_plane=work_control_plane,
+            work_execution_required=work_execution_required,
         )
 
         from octop.infra.history.trajectory.live import TrajectoryLiveBus  # noqa: PLC0415
@@ -472,6 +522,8 @@ class OctopServer:
             user_repo=self.services.repos.user_repo,
             default_timezone=config.default_timezone,
         )
+        if work_execution_required:
+            proactive_scheduler.suspend()
         registry.set_proactive_scheduler(proactive_scheduler)
 
         await registry.boot()
@@ -489,6 +541,9 @@ class OctopServer:
             proactive_scheduler=proactive_scheduler,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
+            work_control_plane=work_control_plane,
+            work_execution_required=work_execution_required,
+            work_entry_mode=work_entry_mode,
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
@@ -535,6 +590,8 @@ class OctopServer:
                 await rt.gateway.shutdown()
                 await rt.agent_registry.shutdown()
                 await rt.user_manager.shutdown_all()
+                if rt.work_control_plane is not None:
+                    rt.work_control_plane.close()
                 if rt.history_archive is not None:
                     rt.history_archive.store.close()
         finally:
@@ -575,7 +632,10 @@ class OctopServer:
         _attach_log_handler(root, handler)
         # Persist framework (uvicorn) request/error logs into the same file too.
         for name in ("uvicorn", "uvicorn.access", "uvicorn.error"):
-            _attach_log_handler(logging.getLogger(name), handler)
+            target = logging.getLogger(name)
+            if not any(isinstance(f, RequestQueryRedaction) for f in target.filters):
+                target.addFilter(RequestQueryRedaction())
+            _attach_log_handler(target, handler)
 
         level = os.environ.get("OCTOP_LOG_LEVEL", "info").upper()
         root.setLevel(getattr(logging, level, logging.INFO))

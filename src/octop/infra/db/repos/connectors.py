@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts
+from octop.infra.retired_integrations import is_retired_integration
 
 
 @dataclass(frozen=True)
@@ -232,12 +233,14 @@ class ConnectorRepo:
     def list_active_mcp_server_names_for_user(self, user_id: int) -> list[str]:
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT mcp_server_name FROM connectors "
+                "SELECT kind, mcp_server_name FROM connectors "
                 "WHERE user_id = ? AND status = 'active' AND credential_blob IS NOT NULL "
                 "ORDER BY display_name",
                 (user_id,),
             ).fetchall()
-        return [str(r["mcp_server_name"]) for r in rows]
+        return [
+            str(r["mcp_server_name"]) for r in rows if not is_retired_integration(str(r["kind"]))
+        ]
 
     def validate_mcp_servers_for_user(self, user_id: int, names: list[str]) -> list[str]:
         allowed = set(self.list_active_mcp_server_names_for_user(user_id))

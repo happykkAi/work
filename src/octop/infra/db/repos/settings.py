@@ -28,6 +28,17 @@ class SettingsRepo:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM settings WHERE key = ?", (key,))
 
+    def revoke_session(self, session_id: str, expires_at: int, now: int) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM settings WHERE key LIKE ? AND CAST(value AS BIGINT) <= ?",
+                ("auth.revoked.%", now),
+            )
+            conn.execute(
+                "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("auth.revoked." + session_id, str(expires_at)),
+            )
+
     def get_active_model(self) -> tuple[str, str]:
         """Return (provider_name, model_id); empty strings if not set."""
         raw = self.get(self._KEY_ACTIVE_MODEL) or ""

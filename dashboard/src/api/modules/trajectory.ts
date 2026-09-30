@@ -1,5 +1,4 @@
-import { getApiUrl } from "../config";
-import { getAuthToken, request, requestBlob } from "../request";
+import { request, requestBlob, requestStream } from "../request";
 
 export type TrajectoryKind =
   | "user"
@@ -45,6 +44,26 @@ export interface TrajectoryMetrics {
 }
 
 export type TrajectoryExportFormat = "jsonl" | "json";
+
+function emitSseFrames(
+  buffer: string,
+  onFrame: (type: string, data: string) => void,
+): string {
+  let separator = /\r?\n\r?\n/.exec(buffer);
+  while (separator) {
+    const block = buffer.slice(0, separator.index);
+    buffer = buffer.slice(separator.index + separator[0].length);
+    let type = "message";
+    const data: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (line.startsWith("event:")) type = line.slice(6).trimStart();
+      if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
+    }
+    if (data.length > 0) onFrame(type, data.join("\n"));
+    separator = /\r?\n\r?\n/.exec(buffer);
+  }
+  return buffer;
+}
 
 function trajectoryBase(agentId: string, threadId: string): string {
   return `/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(
@@ -97,15 +116,43 @@ export const trajectoryApi = {
       )}`,
     ),
 
-  /** Full URL for EventSource. JWT goes in ``access_token`` (no Authorization header). */
-  streamUrl: (agentId: string, threadId: string, afterSeq?: number) => {
+  stream: (
+    agentId: string,
+    threadId: string,
+    afterSeq: number | undefined,
+    onFrame: (type: string, data: string) => void,
+    onDisconnect: () => void,
+  ) => {
     const search = new URLSearchParams();
     if (afterSeq != null) search.set("after_seq", String(afterSeq));
-    const token = getAuthToken();
-    if (token) search.set("access_token", token);
     const qs = search.toString();
-    return getApiUrl(
-      `${trajectoryBase(agentId, threadId)}/stream${qs ? `?${qs}` : ""}`,
-    );
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const { body } = await requestStream(
+          `${trajectoryBase(agentId, threadId)}/stream${qs ? `?${qs}` : ""}`,
+          {
+            headers: { Accept: "text/event-stream" },
+            signal: controller.signal,
+          },
+        );
+        const reader = body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer = emitSseFrames(
+            buffer + decoder.decode(value, { stream: true }),
+            onFrame,
+          );
+        }
+        emitSseFrames(buffer + decoder.decode(), onFrame);
+      } catch {
+        /* Reconnect below unless close() deliberately aborted the request. */
+      }
+      if (!controller.signal.aborted) onDisconnect();
+    })();
+    return { close: () => controller.abort() };
   },
 };

@@ -69,6 +69,11 @@ from octop.infra.connectors.probe import (
 from octop.infra.connectors.service import ConnectorNameTakenError, ConnectorService
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import (
+    FEISHU_DISABLED_MESSAGE,
+    ensure_integration_available,
+    is_retired_integration,
+)
 from octop.infra.utils.locale import resolve_request_locale
 from octop.infra.utils.ulid import new_ulid
 
@@ -212,6 +217,7 @@ async def _begin_oauth_flow(
     target_type = str(target.get("type") or "").strip()
     if target_type == "catalog":
         kind = str(target.get("kind") or "").strip()
+        ensure_integration_available(kind)
         if not oauth_ready_for_kind(kind, server.services.settings_repo):
             raise OctopError(
                 ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
@@ -219,6 +225,8 @@ async def _begin_oauth_flow(
             )
     elif target_type != "custom_mcp":
         raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "unsupported oauth target")
+    else:
+        ensure_integration_available(str(target.get("server_name") or ""))
 
     state = secrets.token_urlsafe(24)
     state_id = new_ulid()
@@ -240,6 +248,7 @@ async def _begin_oauth_flow(
                 "custom_mcp target requires server_name",
             )
         mcp_url = _resolve_custom_mcp_url(_connector_service(server), user.id, server_name)
+        ensure_integration_available(mcp_url)
 
     try:
         authorize_url, verifier, ctx = await start_oauth_for_target(
@@ -585,7 +594,7 @@ async def put_custom_mcp(
             isinstance(spec, dict) and spec.get("shared") is True for spec in servers.values()
         ),
     )
-    return {"servers": redact_servers_for_api(servers)}
+    return {"servers": svc.get_custom_servers_for_api(user.id)}
 
 
 @router.patch(
@@ -642,6 +651,8 @@ async def test_custom_mcp(
             ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
             "provide name or server spec to probe",
         )
+    ensure_integration_available(body.name or "")
+    ensure_integration_available(str(spec.get("url") or ""))
     result = await probe_custom_mcp_server(spec)
     if body.name:
         try:
@@ -668,6 +679,20 @@ async def get_instance(
     _assert_can_manage_connector(inst, user)
 
     data = _instance_to_dict(inst)
+    if is_retired_integration(inst.kind):
+        data.update(
+            {
+                "status": "disabled",
+                "retired": True,
+                "status_message": FEISHU_DISABLED_MESSAGE,
+                "default_open": False,
+                "shared": False,
+                "config": {},
+                "credentials_preview": {"disabled": True},
+            }
+        )
+        return data
+
     config: dict[str, Any] = {}
     if inst.config_json:
         try:
@@ -701,6 +726,7 @@ async def create_instance(
             ErrorCode.CONNECTOR_KIND_UNSUPPORTED,
             "use PUT /connectors/custom-mcp for custom MCP servers",
         )
+    ensure_integration_available(body.kind)
     entry = get_catalog_entry(body.kind)
     if entry is None:
         raise OctopError(ErrorCode.CONNECTOR_KIND_UNSUPPORTED, f"unknown kind {body.kind!r}")
@@ -814,6 +840,32 @@ async def patch_instance(
             ErrorCode.CONNECTOR_KIND_UNSUPPORTED,
             "use PATCH /connectors/custom-mcp/servers/{name} for custom MCP servers",
         )
+    if is_retired_integration(inst.kind):
+        if body.status != "disabled" or any(
+            value is not None
+            for value in (
+                body.display_name,
+                body.description,
+                body.credentials,
+                body.shared,
+                body.default_open,
+            )
+        ):
+            ensure_integration_available(inst.kind)
+        repo.update_status(instance_id, "disabled")
+        _schedule_connector_reload(server, inst.user_id, all_users=True)
+        refreshed = repo.get(instance_id)
+        assert refreshed is not None
+        result = _instance_to_dict(refreshed)
+        result.update(
+            {
+                "retired": True,
+                "status_message": FEISHU_DISABLED_MESSAGE,
+                "default_open": False,
+                "shared": False,
+            }
+        )
+        return result
     if (
         body.status is None
         and body.default_open is None
@@ -896,14 +948,14 @@ async def delete_instance(
     if custom_target is not None:
         custom_user_id, synthetic_name = custom_target
         svc = _connector_service(server)
-        servers = dict(svc.get_custom_servers(custom_user_id))
-        if synthetic_name not in servers:
-            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
-        del servers[synthetic_name]
         try:
-            svc.put_custom_servers(custom_user_id, servers)
+            svc.delete_custom_server(custom_user_id, synthetic_name)
         except ValueError as exc:
             raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
+        except KeyError as exc:
+            raise OctopError(
+                ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found"
+            ) from exc
         server.services.audit_repo.write(
             actor=user.username,
             action="connector.custom_mcp.delete_server",
@@ -959,6 +1011,8 @@ async def test_instance(
         raw = saved.get(synthetic_name)
         if not isinstance(raw, dict):
             raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
+        ensure_integration_available(synthetic_name)
+        ensure_integration_available(str(raw.get("url") or ""))
         return await probe_custom_mcp_server(dict(raw))
 
     repo = server.services.repos.connector_repo
@@ -966,6 +1020,7 @@ async def test_instance(
     if inst is None:
         raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
     _assert_can_manage_connector(inst, user)
+    ensure_integration_available(inst.kind)
 
     entry = get_catalog_entry(inst.kind)
     if entry is None:
@@ -996,6 +1051,7 @@ async def test_credentials(
 ) -> dict[str, Any]:
     """Validate credentials before creating an instance (no persistence)."""
     del user
+    ensure_integration_available(body.kind)
     entry = get_catalog_entry(body.kind)
     if entry is None:
         raise OctopError(ErrorCode.CONNECTOR_KIND_UNSUPPORTED, f"unknown kind {body.kind!r}")
@@ -1319,6 +1375,15 @@ async def oauth_callback(
             "callback_invalid_state",
             status_code=400,
         )
+    ensure_integration_available(row.kind)
+    ctx = load_oauth_ctx(server.services.settings_repo, row.state_id)
+    if row.kind == CUSTOM_MCP_KIND:
+        server_name = str(ctx.get("server_name") or "")
+        ensure_integration_available(server_name)
+        if row.user_id and server_name:
+            ensure_integration_available(
+                _resolve_custom_mcp_url(_connector_service(server), row.user_id, server_name)
+            )
 
     base = resolve_public_base(request)
     redirect_uri = f"{base}/api/connectors/oauth/callback"
@@ -1332,7 +1397,6 @@ async def oauth_callback(
             settings_repo=server.services.settings_repo,
             state_id=row.state_id,
         )
-        ctx = load_oauth_ctx(server.services.settings_repo, row.state_id)
         if ctx.get("client_id"):
             tokens["oauth_client_id"] = ctx["client_id"]
         if ctx.get("client_secret"):
@@ -1427,6 +1491,14 @@ async def oauth_pending(
         raise OctopError(ErrorCode.INTERNAL_ERROR, "corrupt pending oauth") from exc
     if int(data.get("user_id") or 0) != user.id:
         raise OctopError(ErrorCode.FORBIDDEN, "not your oauth session")
+    ensure_integration_available(str(data.get("kind") or ""))
+    if data.get("kind") == CUSTOM_MCP_KIND and data.get("server_name"):
+        ensure_integration_available(str(data.get("server_name")))
+        ensure_integration_available(
+            _resolve_custom_mcp_url(
+                _connector_service(server), user.id, str(data.get("server_name"))
+            )
+        )
     server.services.settings_repo.delete(key)
     return {
         "kind": data.get("kind"),

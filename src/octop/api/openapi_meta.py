@@ -43,12 +43,12 @@ The caller must own the agent unless they are an admin.
 ## Streaming chat
 
 Dashboard live turns use **WebSocket** at `/api/agents/{agent_id}/chat/ws` (pass JWT as
-`?token=` query param). Send `{"type":"user_turn", ...}` frames; the server replies with JSON
+the `octop.auth.<JWT>` WebSocket subprotocol). Send `{"type":"user_turn", ...}` frames; the server replies with JSON
 chunks matching the harness stream format, ending with `{"type":"done"}` or
 `{"type":"error","message":"..."}`.
 
 Text-type dashboard pushes (cron reminders, proactive care) also emit
-`{"type":"dashboard_push", ...}` on `/api/notifications/ws` (same `?token=` auth) so the
+`{"type":"dashboard_push", ...}` on `/api/notifications/ws` (same subprotocol auth) so the
 SPA can show a toast even when the chat socket is not subscribed.
 
 HITL resume still uses `POST /api/agents/{agent_id}/chat/hitl/resume` (SSE).

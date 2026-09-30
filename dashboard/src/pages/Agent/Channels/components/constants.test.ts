@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyQqChannelSaveConfig,
-  DEFAULT_CHANNEL_DISPLAY_CONFIG,
   DEFAULT_QQ_GROUP_CONTEXT_CONFIG,
   normalizeQqGroupContextConfig,
   partitionChannelKeys,
@@ -46,6 +45,10 @@ describe("Discord configuration", () => {
 });
 
 describe("partitionChannelKeys", () => {
+  it("does not offer Feishu as a new channel", () => {
+    expect(CHANNEL_KEYS).not.toContain("feishu");
+  });
+
   it("hides telegram until expanded unless already configured", () => {
     expect(
       partitionChannelKeys(["weixin", "telegram", "mqtt"], new Set()),

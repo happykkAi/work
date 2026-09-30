@@ -5,47 +5,37 @@ import { useTrajectorySession } from "./useTrajectorySession";
 
 const historyMock = vi.fn();
 const metricsMock = vi.fn();
-const streamUrlMock = vi.fn(
-  (_agentId: string, _threadId: string, afterSeq?: number) =>
-    `http://trajectory.test/stream?after_seq=${afterSeq ?? ""}`,
-);
+const streamMock = vi.fn();
 
 vi.mock("../../../api/modules/trajectory", () => ({
   trajectoryApi: {
     history: (...args: unknown[]) => historyMock(...args),
     metrics: (...args: unknown[]) => metricsMock(...args),
-    streamUrl: (agentId: string, threadId: string, afterSeq?: number): string =>
-      streamUrlMock(agentId, threadId, afterSeq),
+    stream: (...args: unknown[]) => streamMock(...args),
   },
 }));
 
-type Listener = (event: MessageEvent) => void;
-
-class MockEventSource {
-  static instances: MockEventSource[] = [];
-  url: string;
+class MockTrajectoryStream {
+  static instances: MockTrajectoryStream[] = [];
   close = vi.fn();
-  onerror: ((event: Event) => void) | null = null;
-  private listeners = new Map<string, Set<Listener>>();
+  private onFrame: (type: string, data: string) => void;
+  private onDisconnect: () => void;
 
-  constructor(url: string) {
-    this.url = url;
-    MockEventSource.instances.push(this);
-  }
-
-  addEventListener(type: string, listener: EventListener): void {
-    const set = this.listeners.get(type) ?? new Set<Listener>();
-    set.add(listener as Listener);
-    this.listeners.set(type, set);
-  }
-
-  removeEventListener(type: string, listener: EventListener): void {
-    this.listeners.get(type)?.delete(listener as Listener);
+  constructor(
+    onFrame: (type: string, data: string) => void,
+    onDisconnect: () => void,
+  ) {
+    this.onFrame = onFrame;
+    this.onDisconnect = onDisconnect;
+    MockTrajectoryStream.instances.push(this);
   }
 
   emit(type: string, data: unknown): void {
-    const event = { data: JSON.stringify(data) } as MessageEvent;
-    this.listeners.get(type)?.forEach((listener) => listener(event));
+    this.onFrame(type, JSON.stringify(data));
+  }
+
+  disconnect(): void {
+    this.onDisconnect();
   }
 }
 
@@ -84,10 +74,19 @@ const assistantEvent = event({
 
 describe("useTrajectorySession", () => {
   beforeEach(() => {
-    MockEventSource.instances = [];
+    MockTrajectoryStream.instances = [];
     historyMock.mockReset();
     metricsMock.mockReset();
-    streamUrlMock.mockClear();
+    streamMock.mockReset();
+    streamMock.mockImplementation(
+      (
+        _agentId: string,
+        _threadId: string,
+        _afterSeq: number | undefined,
+        onFrame: (type: string, data: string) => void,
+        onDisconnect: () => void,
+      ) => new MockTrajectoryStream(onFrame, onDisconnect),
+    );
     historyMock.mockResolvedValue({
       thread_id: "T1",
       events: [toolEvent],
@@ -106,7 +105,6 @@ describe("useTrajectorySession", () => {
       output_tokens: null,
       cache_read_tokens: null,
     });
-    vi.stubGlobal("EventSource", MockEventSource);
   });
 
   afterEach(() => {
@@ -125,11 +123,17 @@ describe("useTrajectorySession", () => {
 
     await waitFor(() => expect(result.current.events).toHaveLength(1));
     expect(historyMock).toHaveBeenCalledWith("A1", "T1");
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(streamUrlMock).toHaveBeenCalledWith("A1", "T1", 1);
+    expect(MockTrajectoryStream.instances).toHaveLength(1);
+    expect(streamMock).toHaveBeenCalledWith(
+      "A1",
+      "T1",
+      1,
+      expect.any(Function),
+      expect.any(Function),
+    );
 
     act(() => {
-      MockEventSource.instances[0].emit("event", assistantEvent);
+      MockTrajectoryStream.instances[0].emit("event", assistantEvent);
     });
 
     expect(result.current.events.map((row) => row.event_id)).toEqual([
@@ -150,7 +154,7 @@ describe("useTrajectorySession", () => {
     await waitFor(() => expect(result.current.events).toHaveLength(1));
 
     act(() => {
-      MockEventSource.instances[0].emit("event", {
+      MockTrajectoryStream.instances[0].emit("event", {
         ...assistantEvent,
         event_id: "tool-1",
         kind: "assistant",
@@ -175,13 +179,13 @@ describe("useTrajectorySession", () => {
       }),
     );
 
-    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(MockTrajectoryStream.instances).toHaveLength(1));
     await waitFor(() =>
       expect(result.current.metrics).toMatchObject({ turns: 1, steps: 1 }),
     );
 
     act(() => {
-      MockEventSource.instances[0].emit("metrics", {
+      MockTrajectoryStream.instances[0].emit("metrics", {
         turns: 3,
         steps: 8,
         llm_duration_ms: 120,
@@ -217,7 +221,7 @@ describe("useTrajectorySession", () => {
     });
 
     expect(historyMock).not.toHaveBeenCalled();
-    expect(MockEventSource.instances).toHaveLength(0);
+    expect(MockTrajectoryStream.instances).toHaveLength(0);
   });
 
   it("clears events when the thread changes before the next page loads", async () => {
@@ -365,7 +369,7 @@ describe("useTrajectorySession", () => {
     ]);
   });
 
-  it("closes the EventSource when the panel is hidden", async () => {
+  it("closes the authenticated stream when the panel is hidden", async () => {
     const { rerender } = renderHook(
       ({ visible }: { visible: boolean }) =>
         useTrajectorySession({
@@ -376,14 +380,14 @@ describe("useTrajectorySession", () => {
       { initialProps: { visible: true } },
     );
 
-    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(MockTrajectoryStream.instances).toHaveLength(1));
 
     rerender({ visible: false });
 
-    expect(MockEventSource.instances[0].close).toHaveBeenCalled();
+    expect(MockTrajectoryStream.instances[0].close).toHaveBeenCalled();
   });
 
-  it("reconnects EventSource after an error using the last seq", async () => {
+  it("reconnects the authenticated stream after a disconnect using the last seq", async () => {
     renderHook(() =>
       useTrajectorySession({
         agentId: "A1",
@@ -392,16 +396,22 @@ describe("useTrajectorySession", () => {
       }),
     );
 
-    await waitFor(() => expect(MockEventSource.instances).toHaveLength(1));
+    await waitFor(() => expect(MockTrajectoryStream.instances).toHaveLength(1));
 
     act(() => {
-      MockEventSource.instances[0].onerror?.(new Event("error"));
+      MockTrajectoryStream.instances[0].disconnect();
     });
 
     await waitFor(() =>
-      expect(MockEventSource.instances.length).toBeGreaterThanOrEqual(2),
+      expect(MockTrajectoryStream.instances.length).toBeGreaterThanOrEqual(2),
     );
-    expect(streamUrlMock).toHaveBeenLastCalledWith("A1", "T1", 1);
+    expect(streamMock).toHaveBeenLastCalledWith(
+      "A1",
+      "T1",
+      1,
+      expect.any(Function),
+      expect.any(Function),
+    );
   });
 
   it("loadEarlier keeps current events when the older page fails", async () => {

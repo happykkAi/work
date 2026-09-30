@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import ToolException, tool
 from starlette.websockets import WebSocketDisconnect
+from work_platform.authorization import ExecutionGrant
+from work_platform.capability_policy import CapabilityPolicy
+from work_platform.runtime_adapter import RuntimeBinding
 
+from octop.infra.work.middleware import WorkExecutionMiddleware
 from tests.support.app import octop_client
 from tests.support.auth import (
     auth_header,
@@ -21,15 +32,221 @@ from tests.support.auth import (
     seed_openai_provider,
 )
 from tests.support.fakes import FakeHarnessAgent
-from tests.support.http import chat_ws_path, ws_connect
+from tests.support.http import ws_connect
+
+
+async def test_enqueue_and_block_failure_still_finishes_turn(
+    env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, srv, _fake, auth, _bob, aid = env
+
+    def fail(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("synthetic persistence failure")
+
+    monkeypatch.setattr(srv.app_runtime.gateway.channel_manager, "enqueue", fail)
+    monkeypatch.setattr(srv.app_runtime.work_control_plane, "block_run", fail)
+    async with _chat_ws(c, aid, auth) as ws:
+        await ws.send_json({"type": "user_turn", "text": "synthetic"})
+        assert (await ws.receive_json())["type"] == "error"
+        assert (await ws.receive_json())["type"] == "done"
+
+
+class SyntheticWorkControlPlane:
+    """In-memory test directory for real Work authorization code paths."""
+
+    def __init__(self) -> None:
+        self.grants: dict[tuple[int, str], ExecutionGrant] = {}
+        self.runs: dict[str, dict[str, Any]] = {}
+        self.attempts: dict[str, dict[str, str]] = {}
+        self.policies: dict[str, CapabilityPolicy | None] = {}
+        self.policy_error = False
+        self.budget_available = True
+
+    def bind_member(self, user_id: int, agent_id: str, organization_id: str = "org-a") -> None:
+        self.grants[(user_id, agent_id)] = ExecutionGrant(
+            octop_user_id=user_id,
+            work_user_id=f"work-user-{user_id}",
+            organization_id=organization_id,
+            agent_id=agent_id,
+            member_status="active",
+            membership_revision=1,
+            policy_revision=1,
+            runtime=RuntimeBinding(
+                organization_id,
+                f"runtime-{organization_id}",
+                f"role-{organization_id}",
+                f"volume-{organization_id}",
+                f"secret-{organization_id}",
+            ),
+        )
+        self.policies.setdefault(
+            organization_id,
+            CapabilityPolicy(
+                enabled=frozenset({"model:openai/test-model", "tool:synthetic_read"}),
+                billable=frozenset({"model:openai/test-model", "tool:synthetic_read"}),
+            ),
+        )
+
+    def revoke_member(self, user_id: int, agent_id: str) -> None:
+        grant = self.grants[(user_id, agent_id)]
+        self.grants[(user_id, agent_id)] = replace(
+            grant,
+            member_status="disabled",
+            membership_revision=grant.membership_revision + 1,
+        )
+
+    def resolve_grant(self, octop_user_id: int, agent_id: str) -> ExecutionGrant | None:
+        return self.grants.get((octop_user_id, agent_id))
+
+    def create_run(self, context: Any) -> None:
+        self.runs[context.run_id] = {"context": context, "status": "queued"}
+
+    def _grant_matches(self, context: Any) -> bool:
+        grant = self.resolve_grant(context.octop_user_id, context.agent_id)
+        return bool(
+            grant
+            and grant.member_status == "active"
+            and grant.work_user_id == context.work_user_id
+            and grant.organization_id == context.organization_id
+            and grant.membership_revision == context.membership_revision
+            and grant.policy_revision == context.policy_revision
+            and grant.runtime.runtime_id == context.runtime_id
+        )
+
+    def activate_run(self, context: Any) -> bool:
+        run = self.runs.get(context.run_id)
+        if run is None or run["status"] != "queued" or not context.is_current():
+            return False
+        if not self._grant_matches(context):
+            return False
+        run["status"] = "running"
+        return True
+
+    def block_run(self, context: Any) -> None:
+        run = self.runs.get(context.run_id)
+        if run is not None and run["status"] in {"queued", "running"}:
+            run["status"] = "blocked"
+
+    def finish_run(self, context: Any, status: str) -> None:
+        self.runs[context.run_id]["status"] = status
+
+    def context_is_current(self, context: Any) -> bool:
+        run = self.runs.get(context.run_id)
+        return bool(
+            run
+            and run["status"] == "running"
+            and context.is_current()
+            and self._grant_matches(context)
+        )
+
+    def load_policy(self, context: Any) -> CapabilityPolicy | None:
+        if self.policy_error:
+            raise RuntimeError("synthetic policy read failure")
+        return self.policies.get(context.organization_id)
+
+    def reserve_attempt(self, context: Any, capability: str, attempt_id: str) -> bool:
+        if not self.budget_available or not self.context_is_current(context):
+            return False
+        if attempt_id in self.attempts:
+            return False
+        self.attempts[attempt_id] = {"capability": capability, "status": "reserved"}
+        return True
+
+    def finish_attempt(self, attempt_id: str, status: str) -> None:
+        if attempt_id in self.attempts:
+            self.attempts[attempt_id]["status"] = status
+
+    def close(self) -> None:
+        pass
+
+
+@contextmanager
+def local_chat_service(
+    responses: list[dict[str, Any]],
+    *,
+    after_request: Any | None = None,
+) -> Any:
+    """Serve captured OpenAI-compatible completions on loopback only."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            size = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(size))
+            calls.append((self.path, body))
+            if after_request is not None:
+                after_request(body)
+            if not responses:
+                self.send_error(503, "synthetic response exhausted")
+                return
+            message = responses.pop(0)
+            response = {
+                "id": "chatcmpl-synthetic",
+                "object": "chat.completion",
+                "created": 0,
+                "model": body.get("model", "test-model"),
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": message,
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+            payload = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, _format: str, *_args: Any) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}/v1", calls
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _install_local_graph(
+    agent: Any,
+    *,
+    base_url: str,
+    tools: list[Any],
+) -> None:
+    from langchain.agents import create_agent
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(model="test-model", base_url=base_url, api_key="synthetic")
+    graph = create_agent(model, tools=tools, middleware=[WorkExecutionMiddleware()])
+
+    async def stream(_request: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        result = await graph.ainvoke({"messages": [HumanMessage(content="run synthetic task")]})
+        yield {"type": "token", "node": "agent", "content": result["messages"][-1].content}
+
+    agent.stream = stream
 
 
 def _chat_ws(c: httpx.AsyncClient, aid: str, auth: dict[str, str]) -> Any:
-    return ws_connect(c._octop_app, chat_ws_path(aid, auth))  # type: ignore[attr-defined]
+    return ws_connect(
+        c._octop_app,
+        f"/api/agents/{aid}/chat/ws",
+        subprotocols=["octop.chat", "octop.auth." + auth["Authorization"].split(" ", 1)[1]],
+    )  # type: ignore[attr-defined]
 
 
 @pytest.fixture
-async def env(tmp_octop_home: Path) -> AsyncIterator[Any]:
+async def env(tmp_octop_home: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
+    monkeypatch.delenv("WORK_CONTROL_DATABASE_URL", raising=False)
+    monkeypatch.delenv("WORK_RUNTIME_ID", raising=False)
     fake = FakeHarnessAgent(
         chunks=[
             {"type": "token", "node": "agent", "content": "Hello "},
@@ -37,11 +254,20 @@ async def env(tmp_octop_home: Path) -> AsyncIterator[Any]:
         ]
     )
     async with octop_client(tmp_octop_home, fake_agent=fake) as (c, srv):
+        assert srv.app_runtime is not None
+        work_directory = SyntheticWorkControlPlane()
+        srv.app_runtime.work_control_plane = work_directory  # type: ignore[assignment]
+        srv.app_runtime.work_execution_required = True
+        srv.app_runtime.agent_registry._work_control_plane = work_directory
+        srv.app_runtime.agent_registry._work_execution_required = True
         await bootstrap_admin(c, tmp_octop_home)
         admin_auth = await auth_header(c)
         await seed_openai_provider(c, admin_auth)
         users = await ensure_users(c, admin_auth, "alice", "bob")
         aid = await create_agent(c, users["alice"])
+        agent_row = srv.services.repos.agent_repo.get(aid)
+        assert agent_row is not None and agent_row.user_id is not None
+        work_directory.bind_member(agent_row.user_id, aid)
         yield c, srv, fake, users["alice"], users["bob"], aid
 
 
@@ -249,6 +475,222 @@ async def test_ws_emits_chunks_then_done(env: Any) -> None:
     assert chunks[-1]["type"] == "done"
 
 
+async def test_ws_work_mode_without_control_plane_rejects_connection(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    srv.app_runtime.work_control_plane = None
+    srv.app_runtime.agent_registry._work_control_plane = None
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        async with _chat_ws(c, aid, alice_auth):
+            pytest.fail("Work chat must close before accepting a connection")
+
+    assert exc_info.value.code == 4003
+
+
+async def test_work_runtime_blocks_proactive_ai_scheduling(
+    tmp_octop_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("WORK_CONTROL_DATABASE_URL", raising=False)
+    monkeypatch.setenv("WORK_RUNTIME_ID", "synthetic-runtime")
+
+    async with octop_client(tmp_octop_home) as (c, server):
+        assert server.app_runtime is not None
+        assert server.app_runtime.work_execution_required is True
+        await bootstrap_admin(c, tmp_octop_home)
+        admin_auth = await auth_header(c)
+        users = await ensure_users(c, admin_auth, "alice", "bob")
+        aid = await create_agent(c, users["alice"])
+
+        config_repo = server.services.repos.proactive_care_config_repo
+        upsert = MagicMock(wraps=config_repo.upsert)
+        monkeypatch.setattr(config_repo, "upsert", upsert)
+        response = await c.put(
+            f"/api/agents/{aid}/proactive-care",
+            headers=users["alice"],
+            json={"enabled": True},
+        )
+
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "FORBIDDEN"
+        upsert.assert_not_called()
+        assert aid not in server.app_runtime.proactive_scheduler._tasks
+
+
+def _tool_message(name: str, call_id: str, *, value: str = "synthetic") -> dict[str, Any]:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps({"value": value})},
+            }
+        ],
+    }
+
+
+def _text_message(text: str) -> dict[str, Any]:
+    return {"role": "assistant", "content": text}
+
+
+async def test_ws_allowed_member_reaches_local_model_and_tool(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    directory = srv.app_runtime.work_control_plane
+    reads: list[str] = []
+
+    @tool
+    def synthetic_read(value: str) -> str:
+        """Read a synthetic local resource."""
+        reads.append(value)
+        return f"local:{value}"
+
+    with local_chat_service(
+        [_tool_message("synthetic_read", "read-1"), _text_message("任务完成")]
+    ) as (base_url, requests):
+        agent = srv.app_runtime.agent_registry.get_agent(aid)
+        _install_local_graph(agent, base_url=base_url, tools=[synthetic_read])
+        frames = await _consume_ws_turn(c, aid, alice_auth)
+
+    assert len(requests) == 2
+    assert all(path.endswith("/chat/completions") for path, _body in requests)
+    assert all(body["model"] == "test-model" for _path, body in requests)
+    assert reads == ["synthetic"]
+    assert [entry["capability"] for entry in directory.attempts.values()] == [
+        "model:openai/test-model",
+        "tool:synthetic_read",
+        "model:openai/test-model",
+    ]
+    assert {entry["status"] for entry in directory.attempts.values()} == {"completed"}
+    assert next(iter(directory.runs.values()))["status"] == "completed"
+
+    create_call = srv.app_runtime.agent_registry.harness_manager.acreate_agent.call_args
+    assert create_call is not None
+    runtime_config = create_call.args[0]
+    assert any(isinstance(item, WorkExecutionMiddleware) for item in runtime_config.middleware)
+    assert any(frame.get("content") == "任务完成" for frame in frames)
+
+
+async def test_ws_cannot_read_another_organizations_synthetic_resource(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    directory = srv.app_runtime.work_control_plane
+    directory.policies["org-a"] = CapabilityPolicy(
+        enabled=frozenset({"model:openai/test-model"}),
+        billable=frozenset({"model:openai/test-model"}),
+    )
+    reads_from_b: list[str] = []
+
+    @tool
+    def read_org_b(value: str) -> str:
+        """Read a synthetic resource owned by organization B."""
+        reads_from_b.append(value)
+        return value
+
+    with local_chat_service([_tool_message("read_org_b", "org-b-read")]) as (
+        base_url,
+        requests,
+    ):
+        agent = srv.app_runtime.agent_registry.get_agent(aid)
+        _install_local_graph(agent, base_url=base_url, tools=[read_org_b])
+        frames = await _consume_ws_turn(c, aid, alice_auth)
+
+    assert len(requests) == 1
+    assert reads_from_b == []
+    assert [entry["capability"] for entry in directory.attempts.values()] == [
+        "model:openai/test-model"
+    ]
+    assert next(iter(directory.runs.values()))["status"] == "blocked"
+    assert any(frame.get("type") == "error" for frame in frames)
+
+
+async def test_ws_revocation_during_model_call_blocks_next_tool_step(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    directory = srv.app_runtime.work_control_plane
+    agent_row = srv.services.repos.agent_repo.get(aid)
+    assert agent_row is not None and agent_row.user_id is not None
+    writes: list[str] = []
+
+    @tool
+    def synthetic_write(value: str) -> str:
+        """Write to a synthetic local resource."""
+        writes.append(value)
+        return "written"
+
+    def revoke_after_model_receives_request(_body: dict[str, Any]) -> None:
+        directory.revoke_member(agent_row.user_id, aid)
+
+    with local_chat_service(
+        [_tool_message("synthetic_write", "write-after-revoke")],
+        after_request=revoke_after_model_receives_request,
+    ) as (base_url, requests):
+        agent = srv.app_runtime.agent_registry.get_agent(aid)
+        _install_local_graph(agent, base_url=base_url, tools=[synthetic_write])
+        frames = await _consume_ws_turn(c, aid, alice_auth)
+
+    assert len(requests) == 1
+    assert writes == []
+    assert [entry["capability"] for entry in directory.attempts.values()] == [
+        "model:openai/test-model"
+    ]
+    assert next(iter(directory.runs.values()))["status"] == "blocked"
+    assert any(frame.get("type") == "error" for frame in frames)
+
+
+@pytest.mark.parametrize("failure", ["policy", "budget"])
+async def test_ws_policy_or_budget_failure_sends_no_model_request(env: Any, failure: str) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    directory = srv.app_runtime.work_control_plane
+    if failure == "policy":
+        directory.policy_error = True
+    else:
+        directory.budget_available = False
+
+    with local_chat_service([_text_message("must not run")]) as (base_url, requests):
+        agent = srv.app_runtime.agent_registry.get_agent(aid)
+        _install_local_graph(agent, base_url=base_url, tools=[])
+        frames = await _consume_ws_turn(c, aid, alice_auth)
+
+    assert requests == []
+    assert directory.attempts == {}
+    assert next(iter(directory.runs.values()))["status"] == "blocked"
+    assert any(frame.get("type") == "error" for frame in frames)
+
+
+async def test_ws_uncertain_tool_write_is_not_retried(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    directory = srv.app_runtime.work_control_plane
+    directory.policies["org-a"] = CapabilityPolicy(
+        enabled=frozenset({"model:openai/test-model", "tool:synthetic_write"}),
+        billable=frozenset({"model:openai/test-model", "tool:synthetic_write"}),
+    )
+    writes: list[str] = []
+
+    @tool
+    def synthetic_write(value: str) -> str:
+        """Write to a synthetic local resource that times out after sending."""
+        writes.append(value)
+        raise ToolException("synthetic write result is uncertain")
+
+    with local_chat_service([_tool_message("synthetic_write", "uncertain-write-1")]) as (
+        base_url,
+        requests,
+    ):
+        agent = srv.app_runtime.agent_registry.get_agent(aid)
+        _install_local_graph(agent, base_url=base_url, tools=[synthetic_write])
+        frames = await _consume_ws_turn(c, aid, alice_auth)
+
+    assert writes == ["synthetic"]
+    assert len(requests) == 1
+    tool_attempts = [
+        entry
+        for entry in directory.attempts.values()
+        if entry["capability"] == "tool:synthetic_write"
+    ]
+    assert len(tool_attempts) == 1
+    assert tool_attempts[0]["status"] == "uncertain"
+    assert not any(frame.get("content") == "写入成功" for frame in frames)
+
+
 async def test_ws_disconnect_does_not_cancel_active_turn(env: Any) -> None:
     c, srv, _fake, alice_auth, _bob_auth, aid = env
     agent = srv.app_runtime.agent_registry.get_agent(aid)
@@ -379,6 +821,33 @@ async def test_polish_rejects_empty_text(env: Any) -> None:
         json={"text": "   "},
     )
     assert r.status_code == 400
+
+
+async def test_polish_is_disabled_in_work_mode_before_model_call(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    harness = MagicMock()
+    harness.config.pick_default_model_ref.return_value = "openai/test-model"
+    get_model = harness.model_factory.get
+    monkeypatch.setattr(
+        srv.app_runtime.agent_registry,
+        "get_agent",
+        MagicMock(return_value=harness),
+    )
+    invoke = AsyncMock(return_value="rewritten")
+    monkeypatch.setattr("octop.api.routers.chat.routes.ainvoke_text", invoke)
+
+    response = await c.post(
+        f"/api/agents/{aid}/chat/polish",
+        headers=alice_auth,
+        json={"text": "synthetic private notes"},
+    )
+
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "FORBIDDEN"
+    get_model.assert_not_called()
+    invoke.assert_not_awaited()
 
 
 async def test_threads_list_after_stream(env: Any) -> None:

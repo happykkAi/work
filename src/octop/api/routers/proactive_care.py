@@ -14,6 +14,7 @@ from pydantic import BaseModel, field_validator, model_validator
 from octop.api.common.agent import require_agent_owner_row
 from octop.api.deps import current_user, get_server
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfig
+from octop.infra.errors import ErrorCode, OctopError
 
 router = APIRouter()
 
@@ -127,6 +128,11 @@ async def put_proactive_care_config(
     - min_interval_hours >= 1
     """
     require_agent_owner_row(agent_id, user=user, as_user=None, server=server)
+    if server.app_runtime is not None and server.app_runtime.work_execution_required:
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "Proactive care is disabled in Work mode until it uses an authorized execution run",
+        )
 
     cfg = ProactiveCareConfig(
         agent_id=agent_id,

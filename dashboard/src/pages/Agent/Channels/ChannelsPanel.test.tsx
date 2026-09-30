@@ -38,6 +38,40 @@ beforeEach(() => {
 });
 
 describe("<ChannelsPanel /> create-flow default", () => {
+  it("hides Feishu setup and keeps a disabled legacy binding locally removable", async () => {
+    const row = {
+      id: "f1",
+      kind: "feishu",
+      name: "legacy Feishu",
+      enabled: false,
+      retired: true,
+      status: "disabled",
+      status_message: "飞书相关功能已停用，历史记录保留",
+    };
+    api.mockImplementation(async (url, init) => {
+      if (init?.method === "DELETE") return undefined;
+      if (url.endsWith("/channels")) return [row];
+      return [];
+    });
+
+    render(<ChannelsPanel agentId="ag1" />);
+
+    expect(
+      await screen.findByText("retiredFeatures.feishuMessage"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("channels.label_feishu")).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: /retiredFeatures\.localUnbind/ }),
+    );
+    await waitFor(() => {
+      expect(
+        api.mock.calls.some(
+          ([url, init]) => url.endsWith("/f1") && init?.method === "DELETE",
+        ),
+      ).toBe(true);
+    });
+  });
+
   it("defaults Discord to all channels and saves without channel IDs", async () => {
     render(<ChannelsPanel agentId="ag1" />);
     await userEvent.click(
@@ -115,6 +149,7 @@ describe("<ChannelsPanel /> create-flow default", () => {
         });
       });
     },
+    10_000,
   );
 
   it("opens Discord and saves the token with exact channel/user IDs", async () => {

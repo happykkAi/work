@@ -136,7 +136,10 @@ export function useChannels(agentId: string | null) {
   );
 
   const deleteChannel = useCallback(
-    async (channelId: string): Promise<boolean> => {
+    async (
+      channelId: string,
+      successMessageKey = "channels.deletedSuccess",
+    ): Promise<boolean> => {
       if (!agentId) return false;
       // Optimistic remove; restore from server fetch on failure.
       const previous = channels;
@@ -145,7 +148,7 @@ export function useChannels(agentId: string | null) {
         await request(`/agents/${agentId}/channels/${channelId}`, {
           method: "DELETE",
         });
-        message.success(t("channels.deletedSuccess"));
+        message.success(t(successMessageKey));
         return true;
       } catch (error) {
         console.error("[Channels] Failed to delete channel:", error);

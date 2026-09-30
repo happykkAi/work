@@ -31,6 +31,7 @@ async def test_catalog(env):
     kinds = {e["kind"] for e in r.json()}
     assert "tencent-docs" in kinds
     assert "notion" in kinds
+    assert "feishu-cli" not in kinds
     assert "figma" not in kinds
     assert "baidu-netdisk" not in kinds
     for kind in (
@@ -93,6 +94,188 @@ async def test_catalog(env):
         "credential_fields": [],
         "supports_quick_auth": True,
     }
+
+
+async def test_feishu_custom_mcp_save_and_probe_are_disabled_before_network(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    c, _srv, auth, _ = env
+
+    async def unexpected_probe(_spec):
+        raise AssertionError("retired custom MCP must not make a network request")
+
+    monkeypatch.setattr("octop.api.routers.connectors.probe_custom_mcp_server", unexpected_probe)
+    spec = {
+        "transport": "streamable_http",
+        "url": "https://open.feishu.cn/open-apis/mcp",
+        "enabled": True,
+    }
+    saved = await c.put(
+        "/api/connectors/custom-mcp",
+        headers=auth,
+        json={"servers": {"organization-data": spec}},
+    )
+    assert saved.status_code == 410
+    assert saved.json()["error"]["code"] == "FEATURE_DISABLED"
+
+    probed = await c.post(
+        "/api/connectors/custom-mcp/test",
+        headers=auth,
+        json={"server": spec},
+    )
+    assert probed.status_code == 410
+    assert probed.json()["error"]["code"] == "FEATURE_DISABLED"
+    current = await c.get("/api/connectors/custom-mcp", headers=auth)
+    assert current.status_code == 200
+    assert current.json()["servers"] == {}
+
+
+async def test_legacy_feishu_custom_mcp_is_hidden_from_editor_and_unbindable(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    c, srv, auth, _ = env
+    user_id = await resolve_user_id(c, auth, "admin")
+    from octop.api.routers.connectors import _connector_service
+
+    svc = _connector_service(srv)
+    svc._save_custom_servers(
+        user_id,
+        {
+            "feishu-data": {
+                "transport": "streamable_http",
+                "url": "https://open.feishu.cn/open-apis/mcp",
+                "headers": {"Authorization": "Bearer synthetic"},
+                "enabled": False,
+                "default_open": False,
+                "shared": False,
+            }
+        },
+        allow_retired_existing=True,
+    )
+
+    async def unexpected_probe(_spec):
+        raise AssertionError("retired custom MCP must not be probed")
+
+    monkeypatch.setattr("octop.api.routers.connectors.probe_custom_mcp_server", unexpected_probe)
+    editor = await c.get("/api/connectors/custom-mcp", headers=auth)
+    assert editor.status_code == 200
+    assert editor.json()["servers"] == {}
+
+    listed = await c.get("/api/connector-instances", headers=auth)
+    old = next(row for row in listed.json() if row["display_name"] == "feishu-data")
+    assert old["retired"] is True
+    assert old["status"] == "disabled"
+    assert old["default_open"] is False
+    assert old["shared"] is False
+
+    tested = await c.post(f"/api/connector-instances/{old['instance_id']}/test", headers=auth)
+    assert tested.status_code == 410
+    assert tested.json()["error"]["code"] == "FEATURE_DISABLED"
+
+    updated = await c.put(
+        "/api/connectors/custom-mcp",
+        headers=auth,
+        json={
+            "servers": {
+                "safe-server": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/mcp",
+                }
+            }
+        },
+    )
+    assert updated.status_code == 200
+    assert set(updated.json()["servers"]) == {"safe-server"}
+    assert "feishu-data" in svc.get_custom_servers(user_id)
+
+    unbound = await c.delete(f"/api/connector-instances/{old['instance_id']}", headers=auth)
+    assert unbound.status_code == 204
+    assert "feishu-data" not in svc.get_custom_servers(user_id)
+    assert "safe-server" in svc.get_custom_servers(user_id)
+
+
+async def test_feishu_cli_oauth_is_disabled_before_auth_exchange(env):
+    c, _srv, auth, _ = env
+    response = await c.post(
+        "/api/connectors/feishu-cli/user-auth/start",
+        headers=auth,
+        json={},
+    )
+    assert response.status_code == 410
+    assert response.json()["error"]["code"] == "FEATURE_DISABLED"
+    assert response.json()["error"]["message"] == "飞书相关功能已停用，历史记录保留"
+
+    probe = await c.post(
+        "/api/connectors/test-credentials",
+        headers=auth,
+        json={"kind": "feishu-cli", "credentials": {"app_id": "synthetic"}},
+    )
+    assert probe.status_code == 410
+    assert probe.json()["error"]["code"] == "FEATURE_DISABLED"
+
+
+async def test_retired_feishu_connector_is_read_only_and_never_loads_credentials(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    c, srv, auth, _ = env
+    user_id = await resolve_user_id(c, auth, "admin")
+    repo = srv.services.repos.connector_repo
+    instance_id = new_ulid()
+    repo.create(
+        instance_id=instance_id,
+        user_id=user_id,
+        kind="feishu-cli",
+        display_name="legacy Feishu",
+        mcp_server_name="feishu-cli__legacy",
+        config_json=json.dumps({"default_open": True}),
+        shared=True,
+    )
+    with repo._db.transaction() as conn:
+        conn.execute(
+            "UPDATE connectors SET credential_blob = ? WHERE instance_id = ?",
+            (b"synthetic-encrypted-grant", instance_id),
+        )
+
+    def unexpected_credential_read(*_args, **_kwargs):
+        raise AssertionError("retired connector credentials must not be loaded")
+
+    monkeypatch.setattr(
+        "octop.api.routers.connectors.ConnectorService.decrypt",
+        unexpected_credential_read,
+    )
+    monkeypatch.setattr(
+        "octop.api.routers.connectors.live_user_auth_preview",
+        unexpected_credential_read,
+    )
+
+    listed = await c.get("/api/connector-instances", headers=auth)
+    row = next(item for item in listed.json() if item["instance_id"] == instance_id)
+    assert row["retired"] is True
+    assert row["status"] == "disabled"
+    assert row["default_open"] is False
+    assert row["shared"] is False
+    assert row["status_message"] == "飞书相关功能已停用，历史记录保留"
+
+    detail = await c.get(f"/api/connector-instances/{instance_id}", headers=auth)
+    assert detail.status_code == 200
+    assert detail.json()["retired"] is True
+    assert detail.json()["status"] == "disabled"
+    assert detail.json()["config"] == {}
+    assert detail.json()["credentials_preview"] == {"disabled": True}
+
+    for body in (
+        {"status": "active"},
+        {"credentials": {"app_id": "synthetic"}},
+        {"default_open": True},
+        {"shared": True},
+    ):
+        response = await c.patch(f"/api/connector-instances/{instance_id}", headers=auth, json=body)
+        assert response.status_code == 410
+        assert response.json()["error"]["code"] == "FEATURE_DISABLED"
+
+    test = await c.post(f"/api/connector-instances/{instance_id}/test", headers=auth)
+    assert test.status_code == 410
+    assert test.json()["error"]["code"] == "FEATURE_DISABLED"
 
 
 async def test_create_tencent_instance(env):
@@ -451,9 +634,8 @@ async def test_catalog_weknora_dify_last(env):
     r = await c.get("/api/connectors/catalog", headers=auth)
     assert r.status_code == 200
     kinds = [e["kind"] for e in r.json()]
-    assert "feishu-cli" in kinds
+    assert "feishu-cli" not in kinds
     assert "wecom-cli" in kinds
-    assert kinds.index("feishu-cli") < kinds.index("weknora")
     assert kinds.index("wecom-cli") < kinds.index("dify")
     assert kinds.index("didi") < kinds.index("weknora")
     assert kinds[-2:] == ["weknora", "dify"]
@@ -463,8 +645,8 @@ async def test_install_cli_forbidden_for_non_admin(env):
     c, _, admin_auth, _ = env
     user_auth = await create_user(c, admin_auth, username="cli_user", permissions=[])
     r = await c.post("/api/connectors/feishu-cli/install-cli", headers=user_auth)
-    assert r.status_code == 403
-    assert r.json()["error"]["code"] == "FORBIDDEN"
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "FEATURE_DISABLED"
 
 
 async def test_install_cli_admin_ok_mocked(env, monkeypatch: pytest.MonkeyPatch):
@@ -488,10 +670,8 @@ async def test_install_cli_admin_ok_mocked(env, monkeypatch: pytest.MonkeyPatch)
         _fake_install,
     )
     r = await c.post("/api/connectors/feishu-cli/install-cli", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["already_installed"] is True
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "FEATURE_DISABLED"
 
 
 async def test_cli_status_available_to_non_admin(env, monkeypatch: pytest.MonkeyPatch):
@@ -511,8 +691,8 @@ async def test_cli_status_available_to_non_admin(env, monkeypatch: pytest.Monkey
         },
     )
     r = await c.get("/api/connectors/feishu-cli/cli-status", headers=user_auth)
-    assert r.status_code == 200
-    assert r.json()["installed"] is False
+    assert r.status_code == 410
+    assert r.json()["error"]["code"] == "FEATURE_DISABLED"
 
 
 async def test_patch_custom_mcp_server_default_open_only(env):

@@ -175,7 +175,7 @@ async def test_cronjob_run_now(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_cronjob_create_uses_configurable_session_key(tmp_path: Path) -> None:
+async def test_cronjob_create_rejects_retired_feishu_session(tmp_path: Path) -> None:
     services = _make_services(tmp_path)
     agent_id = new_ulid()
     user_id = services.repos.user_repo.create(username="sk", password_hash="x", role="user")
@@ -193,7 +193,8 @@ async def test_cronjob_create_uses_configurable_session_key(tmp_path: Path) -> N
     with _configurable(agent_id=agent_id, user=str(user_id), session_key=feishu_sk):
         out = await create.ainvoke({"trigger": "interval:30", "prompt": "ping", "name": "ping"})
     data = json.loads(out)
-    assert data["session_key"] == feishu_sk
+    assert data == {"error": "飞书相关功能已停用，历史记录保留"}
+    assert mgr.list_all(include_disabled=True) == []
 
 
 @pytest.mark.asyncio

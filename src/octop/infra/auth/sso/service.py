@@ -27,6 +27,11 @@ from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.sso import SsoProviderRow
 from octop.infra.db.services import SharedServices
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import (
+    FEISHU_DISABLED_MESSAGE,
+    ensure_integration_available,
+    is_retired_integration,
+)
 from octop.infra.users.identity import User
 from octop.infra.users.manager import UserManager
 
@@ -75,13 +80,21 @@ class SsoService:
             adapter = self._adapters[kind]
             row = rows.get(kind)
             enabled = bool(
-                row is not None and row.enabled and adapter.is_configured(row) and users_exist
+                row is not None
+                and row.enabled
+                and adapter.is_configured(row)
+                and users_exist
+                and not is_retired_integration(kind)
             )
             providers.append(
                 {
                     "kind": kind,
                     "display_name": row.display_name if row is not None else "",
                     "enabled": enabled,
+                    "retired": is_retired_integration(kind),
+                    "status_message": (
+                        FEISHU_DISABLED_MESSAGE if is_retired_integration(kind) else ""
+                    ),
                 }
             )
         return {"providers": providers}
@@ -94,6 +107,21 @@ class SsoService:
 
     def get_config_for_kind(self, kind: str, *, public_base: str) -> dict[str, Any]:
         adapter = self._adapter(kind)
+        if is_retired_integration(kind):
+            return {
+                "kind": kind,
+                "enabled": False,
+                "retired": True,
+                "status_message": FEISHU_DISABLED_MESSAGE,
+                "display_name": "Feishu",
+                "issuer": "",
+                "client_id": "",
+                "scopes": "",
+                "dashboard_origin": None,
+                "has_client_secret": False,
+                "redirect_uri": "",
+                "extra": {},
+            }
         provider = self._services.sso_repo.get_by_kind(kind)
         redirect_uri = build_redirect_uri(public_base, adapter.callback_path)
         if provider is None:
@@ -145,6 +173,7 @@ class SsoService:
         secret_repo: SecretRepo | None = None,
         public_base: str | None = None,
     ) -> dict[str, Any]:
+        ensure_integration_available(kind)
         adapter = self._adapter(kind)
         current = self._services.sso_repo.get_by_kind(kind)
         secret = body.get("client_secret")
@@ -205,6 +234,7 @@ class SsoService:
         return self.test_connection_for_kind("oidc")
 
     def test_connection_for_kind(self, kind: str) -> dict[str, bool | str]:
+        ensure_integration_available(kind)
         adapter = self._adapter(kind)
         provider = self._services.sso_repo.get_by_kind(kind)
         if provider is None or not adapter.is_configured(provider):
@@ -224,6 +254,7 @@ class SsoService:
         public_base: str,
         bind_user_id: int | None = None,
     ) -> dict[str, str]:
+        ensure_integration_available(kind)
         self._services.sso_repo.delete_expired()
         adapter = self._adapter(kind)
         provider = self._enabled_provider_for_kind(kind)
@@ -275,6 +306,7 @@ class SsoService:
         provider = self._services.sso_repo.get_by_id(login_state.provider_id)
         if provider is None or not provider.enabled:
             return self._error_redirect(frontend, "disabled")
+        ensure_integration_available(provider.kind)
         try:
             adapter = self._adapter(provider.kind)
         except ValueError:
@@ -360,6 +392,7 @@ class SsoService:
         return self._enabled_provider_for_kind("oidc")
 
     def _enabled_provider_for_kind(self, kind: str) -> SsoProviderRow:
+        ensure_integration_available(kind)
         adapter = self._adapter(kind)
         provider = self._services.sso_repo.get_by_kind(kind)
         if provider is None or not provider.enabled or self._user_manager.count() == 0:

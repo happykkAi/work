@@ -2,9 +2,11 @@ import { getAuthToken } from "../request";
 import { getWsUrl } from "../config";
 
 export function buildDashboardNotifyWsUrl(): string {
+  return getWsUrl("/notifications/ws");
+}
+
+export function createDashboardNotifyWebSocket(): WebSocket {
   const token = getAuthToken();
-  const base = getWsUrl("/notifications/ws");
-  if (!token) return base;
-  const params = new URLSearchParams({ token });
-  return `${base}?${params.toString()}`;
+  const protocols = token ? ["octop.chat", `octop.auth.${token}`] : undefined;
+  return new WebSocket(buildDashboardNotifyWsUrl(), protocols);
 }

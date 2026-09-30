@@ -29,6 +29,17 @@ async def test_setup_required_then_login(client):
 
     r = await c.post("/api/auth/logout", headers={"Authorization": f"Bearer {token}"})
     assert r.status_code == 204
+    assert (
+        await c.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    ).status_code == 401
+    fresh = await c.post("/api/auth/login", json={"username": "alice", "password": "TestPass12"})
+    assert fresh.status_code == 200
+    assert fresh.json()["access_token"] != token
+    assert (
+        await c.get(
+            "/api/auth/me", headers={"Authorization": f"Bearer {fresh.json()['access_token']}"}
+        )
+    ).status_code == 200
 
 
 async def test_setup_again_410(client):
@@ -36,6 +47,36 @@ async def test_setup_again_410(client):
     await bootstrap_admin(c, home, username="a", password="TestPass12")
     r = await c.post("/api/setup/initial-admin", json={"username": "b", "password": "TestPass12"})
     assert r.status_code == 410
+
+
+async def test_logout_revokes_sliding_renewed_session_copies(client):
+    from octop.api.deps import decode_token, sign_token
+
+    c, srv, home = client
+    await bootstrap_admin(c, home, username="alice", password="TestPass12")
+    original = (
+        await c.post("/api/auth/login", json={"username": "alice", "password": "TestPass12"})
+    ).json()["access_token"]
+    secret = srv.services.secret_repo.get("jwt")
+    payload = decode_token(secret, original)
+    renewed = sign_token(
+        secret,
+        sub=payload["sub"],
+        uname=payload["uname"],
+        role=payload["role"],
+        ttl_seconds=90000,
+        session_id=payload["jti"],
+    )
+    assert (
+        await c.get("/api/auth/me", headers={"Authorization": "Bearer " + renewed})
+    ).status_code == 200
+    assert (
+        await c.post("/api/auth/logout", headers={"Authorization": "Bearer " + renewed})
+    ).status_code == 204
+    for token in (original, renewed):
+        assert (
+            await c.get("/api/auth/me", headers={"Authorization": "Bearer " + token})
+        ).status_code == 401
 
 
 async def test_change_password(client):

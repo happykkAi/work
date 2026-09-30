@@ -32,9 +32,9 @@ def _fake_row(channel_id: str = "ch1") -> MagicMock:
     row = MagicMock()
     row.channel_id = channel_id
     row.agent_id = "agent1"
-    row.kind = "feishu"
+    row.kind = "qq"
     row.name = "main"
-    row.config_json = '{"app_id":"x","app_secret":"y"}'
+    row.config_json = '{"app_id":"x","secret":"y","response_mode":"invoke"}'
     row.enabled = 1
     return row
 
@@ -54,7 +54,6 @@ async def test_register_success_sets_runtime_connected(tmp_path: Path) -> None:
     assert status.connected is True
     assert status.reason is None
     assert gw._channel_manager.add_channel.await_args is not None
-    assert gw._channel_manager.add_channel.await_args.kwargs["processor"] is not gw._processor
 
 
 @pytest.mark.asyncio

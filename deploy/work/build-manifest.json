@@ -1,0 +1,93 @@
+{
+  "manifest_version": 2,
+  "source": {
+    "work_sha": null,
+    "octop_sha": "232030f46c5450801ca87809f8a4da57aefc5a05",
+    "candidate_base_head": "9630df997c4d74dc49effae6102f96423b0059ff",
+    "worktree_dirty": true,
+    "candidate_sha256": "48d2e47478b902fdfdf7af93f3815b93c94f38f48787b6e8fba763d6b9f63522",
+    "candidate_file_count": 3699,
+    "candidate_exclusions": ["docs/work2-", "deploy/work/build-manifest.json"],
+    "candidate_inventory": ".superpowers/sdd/Work2_Octop_完整替换与持续升级计划_20260927/real-env-20260930/candidate-final-fixed.json",
+    "source_archive_sha256": "512a96badfd8ae8ce99d810fcf3fbea53076923b982dd9db436a50e23bc0507b",
+    "tracked_patch_sha256": "f3294b37ab42cb2ac844f5fb07fa1b45587317a11de5244e57d68b5e8a883dd3",
+    "directory_symlinks_excluded_from_regular_file_inventory": {
+      "src/octop/infra/agents/experts/library/cvm-cluster-doctor/skills/cvm-ai-doctor": "../../cvm-ai-doctor/skills/cvm-ai-doctor"
+    }
+  },
+  "runtime": {
+    "python": "3.12.13",
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "uv": "0.12.19"
+  },
+  "base_images": {
+    "build": "node:24.21.0-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6",
+    "runtime": "python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36",
+    "test_database": "pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
+  },
+  "lockfiles": {
+    "octop_uv_lock_sha256": "3ecad1ef86f5e9b588f100df7b7af73859f234be9dbe631da90ed2fa9db7611c",
+    "dashboard_npm_lock_sha256": "f624f684fc3c0f2b9f84be656428a5345077959d3f806cb05be5b489b8b892f9",
+    "work_platform_uv_lock_sha256": "873679d6c05d09d1357e5f81a8a1e4155cc574fc8f2a2fa4cb9a7a359cac44d4"
+  },
+  "artifacts": [
+    {
+      "name": "octop-1.0.2b4-py3-none-any.whl",
+      "sha256": "37fb77afd5a365b86ddea7dadb5bbd9c08e87b397216e39741cbd4b0bc973352"
+    },
+    {
+      "name": "octop-1.0.2b4.tar.gz",
+      "sha256": "5aa33021e78fca2344d0232ede6b7e651341402063fc1bab53359b36661ab407"
+    },
+    {
+      "name": "work_platform-0.1.0-py3-none-any.whl",
+      "sha256": "28fa94e99daa088b0c177058dd3ad4d8e5ee2fe4a6190ed7b6b995ba4fcc0bac"
+    },
+    {
+      "name": "work_platform-0.1.0.tar.gz",
+      "sha256": "671122b3552bdde84235b73ac4e3591e6541e6d19497f07c056410fb0052db15"
+    }
+  ],
+  "artifact_source_status": {
+    "snapshot": "final-fixed-20260930",
+    "matches_current_source": true,
+    "reason": "Final source inventory unchanged after complete gate; Octop and work_platform wheel files byte-compared against current source.",
+    "artifact_directory": ".superpowers/sdd/Work2_Octop_完整替换与持续升级计划_20260927/real-env-20260930/final-fixed-build"
+  },
+  "local_image": {
+    "tag": "work2-local:final-fixed-20260930",
+    "image_id": "sha256:e9b6136e055958f16214ea28e005608eb0a96c3be4a3efb8606f578bfaf4c8cb",
+    "platform": "linux/arm64",
+    "registry_repo_digest": null,
+    "target_server_architecture": "UNKNOWN",
+    "compose_sha256": "b5d6bf00fc5db6dbe7838484c4f6a312071e235dc4d65c916d368a205bfe7a5d",
+    "compose_override_sha256": "e24533779a4e40d39b05f6d9ae5415ac7c31c2cbcabe5d8a7b553d7cb11ac02f",
+    "entry_a_b_runtime_config_sha256": "085c3a28394f7674993637f9f28a292436360db63bda221a70cf513b00f6576a"
+  },
+  "local_validation": {
+    "recorded_at": "2026-09-30T06:59:11Z",
+    "postgresql_container": "work2-pg-accept-20260929",
+    "postgresql_tests": "10 real PostgreSQL passed; 3 final-wheel distribution passed",
+    "dashboard_tests": "207 files / 1089 passed",
+    "affected_backend_tests": "33 passed",
+    "dashboard_tests_initial": "FAIL: 24 failed / 1065 passed under concurrent load",
+    "dashboard_test_command": "npm test -- --maxWorkers=2",
+    "dashboard_test_build": "PASS; unchanged frontend component from Node24 build",
+    "full_gate_after_current_changes": "PASS: make check-all exit 0; 3930 passed / 21 skipped / 13 warnings; 922.22s",
+    "runtime_ab_container_acceptance": "PARTIAL_PASS",
+    "database_restart_recovery": "PASS: 503 then unexpired consumed-ticket 403; business connection restored",
+    "long_connection": "PASS: continuous 89.54s; idle heartbeat 79.39s; expiry/logout/revocation/reconnect",
+    "shared_database_quota_races": "PASS: 4 processes; 20/task lifetime, 100/user UTC day, 500/org UTC day",
+    "multiple_runtime_workers": "FAIL: second startup blocks active first-worker run",
+    "runtime_platform_policy_write_isolation": "FAIL: policy and quota UPDATE privilege still granted",
+    "old_work_business_migration": "BLOCKED: transformation/import/reconciliation implementation missing",
+    "institution_business_closure": "BLOCKED: project/artifact-review/export chain missing",
+    "customized_octop_upgrade_and_business_recovery": "BLOCKED: version pair and business recovery fixtures/tools missing",
+    "controlled_preproduction_admission": "BLOCKED",
+    "production_replacement": "NOT_AUTHORIZED"
+  },
+  "acceptance_report": "docs/work2-fixed-scope-acceptance-2026-09-30.md",
+  "sbom": null,
+  "licenses": []
+}

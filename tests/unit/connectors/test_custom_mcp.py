@@ -15,6 +15,7 @@ from octop.infra.connectors.custom_mcp import (
     harness_spec_for_server,
     normalize_server_spec,
     validate_servers_map,
+    wrap_servers,
 )
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.migrate import run_migrations
@@ -22,6 +23,7 @@ from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.ulid import new_ulid
 
 
@@ -291,6 +293,93 @@ def test_put_empty_servers_deletes_parent_row(svc: ConnectorService, db: SqliteP
     assert svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND) is not None  # noqa: SLF001
     assert svc.put_custom_servers(uid, {}) == {}
     assert svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND) is None  # noqa: SLF001
+    assert svc.list_instances_for_api(uid) == []
+
+
+def _seed_legacy_feishu_mcp(svc: ConnectorService, user_id: int) -> None:
+    instance_id = new_ulid()
+    svc._repo.create(  # noqa: SLF001
+        instance_id=instance_id,
+        user_id=user_id,
+        kind=CUSTOM_MCP_KIND,
+        display_name="Custom MCP",
+        mcp_server_name=mcp_server_name(CUSTOM_MCP_KIND, instance_id),
+    )
+    svc.encrypt_and_store(
+        instance_id=instance_id,
+        payload=wrap_servers(
+            {
+                "history-feishu": {
+                    "transport": "streamable_http",
+                    "url": "https://open.feishu.cn/mcp",
+                    "enabled": True,
+                    "oauth": {
+                        "access_token": "synthetic-access",
+                        "refresh_token": "synthetic-refresh",
+                        "expires_at": 1,
+                        "oauth_issuer": "https://open.feishu.cn",
+                    },
+                }
+            }
+        ),
+    )
+
+
+def test_legacy_feishu_mcp_is_not_planned_or_refreshed(
+    svc: ConnectorService,
+    db: SqlitePool,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    uid = _ensure_user(db)
+    _seed_legacy_feishu_mcp(svc, uid)
+    refresh_calls = 0
+
+    async def unexpected_refresh(_oauth):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        raise AssertionError("retired MCP OAuth must not refresh")
+
+    monkeypatch.setattr(
+        "octop.infra.connectors.service.refresh_custom_mcp_oauth", unexpected_refresh
+    )
+
+    assert svc.list_active_mcp_server_names(uid) == []
+    assert svc.list_instances_for_api(uid)[0]["status"] == "disabled"
+    assert svc.list_instances_for_api(uid)[0]["retired"] is True
+    assert svc.custom_harness_configs(uid) == {}
+    with pytest.raises(OctopError) as exc:
+        svc.validate_mcp_servers_for_user(uid, ["history-feishu"])
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+
+    import asyncio
+
+    assert asyncio.run(svc.ensure_fresh_custom_servers(uid))["history-feishu"]["enabled"] is True
+    assert asyncio.run(svc.mcp_configs_for_user(uid)) == {}
+    assert refresh_calls == 0
+
+
+def test_retired_custom_mcp_cannot_be_reenabled_but_can_be_unbound(
+    svc: ConnectorService,
+    db: SqlitePool,
+):
+    uid = _ensure_user(db)
+    _seed_legacy_feishu_mcp(svc, uid)
+
+    with pytest.raises(OctopError) as exc:
+        svc.put_custom_servers(
+            uid,
+            {
+                "history-feishu": {
+                    "transport": "streamable_http",
+                    "url": "https://open.feishu.cn/mcp",
+                    "enabled": True,
+                }
+            },
+        )
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+
+    assert svc.delete_custom_server(uid, "history-feishu") == {}
+    assert svc.get_custom_servers(uid) == {}
     assert svc.list_instances_for_api(uid) == []
 
 

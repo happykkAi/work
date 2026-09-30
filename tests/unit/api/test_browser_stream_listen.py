@@ -30,6 +30,44 @@ class _FakeWs:
             self.application_state = WebSocketState.DISCONNECTED
 
 
+class _RouteWs:
+    def __init__(self) -> None:
+        self.app = SimpleNamespace(state=SimpleNamespace(octop_server=object()))
+        self.headers = {"Sec-WebSocket-Protocol": "octop.chat, octop.auth.header.payload.signature"}
+        self.application_state = WebSocketState.CONNECTING
+        self.accepted_subprotocol: str | None = None
+        self.sent: list[dict[str, Any]] = []
+
+    async def accept(self, subprotocol: str | None = None) -> None:
+        self.accepted_subprotocol = subprotocol
+        self.application_state = WebSocketState.CONNECTED
+
+    async def receive_text(self) -> str:
+        return '{"type":"invalid"}'
+
+    async def send_text(self, raw: str) -> None:
+        import json
+
+        self.sent.append(json.loads(raw))
+
+    async def close(self, code: int = 1000, reason: str | None = None) -> None:
+        self.application_state = WebSocketState.DISCONNECTED
+
+
+@pytest.mark.asyncio
+async def test_browser_route_accepts_token_from_subprotocol_without_query() -> None:
+    ws = _RouteWs()
+    with patch.object(
+        stream_mod,
+        "resolve_user_from_token",
+        return_value=SimpleNamespace(id=1),
+    ):
+        await stream_mod.browser_stream_ws(ws, token=None)  # type: ignore[arg-type]
+
+    assert ws.accepted_subprotocol == "octop.chat"
+    assert ws.sent == [{"type": "error", "message": "expected start message"}]
+
+
 @pytest.mark.asyncio
 async def test_listen_state_loop_idle_without_session() -> None:
     ws = _FakeWs()

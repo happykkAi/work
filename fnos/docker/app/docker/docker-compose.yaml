@@ -1,6 +1,6 @@
 services:
   octop:
-    image: ghcr.io/tencentcloud/octop:latest
+    image: ${OCTOP_IMAGE:?set the tested runtime image by immutable digest}
     container_name: octop
     restart: unless-stopped
     pull_policy: always

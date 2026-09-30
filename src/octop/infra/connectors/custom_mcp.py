@@ -7,6 +7,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import FEISHU_DISABLED_MESSAGE, is_retired_integration
 from octop.infra.utils.ssrf_guard import (
     UnsafeOutboundUrl,
     is_private_or_local_host,
@@ -405,7 +406,8 @@ def expand_custom_instances(
     for name, spec in servers.items():
         if not isinstance(spec, dict):
             continue
-        enabled = server_enabled(spec)
+        retired = is_retired_integration(name) or is_retired_integration(str(spec.get("url") or ""))
+        enabled = server_enabled(spec) and not retired
         if shared_view and spec.get("shared") is not True:
             continue
         items.append(
@@ -418,12 +420,14 @@ def expand_custom_instances(
                 "kind": CUSTOM_MCP_KIND,
                 "display_name": server_display_name(name, spec),
                 "status": "active" if enabled else "disabled",
+                "retired": retired,
+                "status_message": FEISHU_DISABLED_MESSAGE if retired else None,
                 "mcp_server_name": (
                     shared_mcp_server_name(parent.instance_id, name) if shared_view else name
                 ),
                 "has_credentials": True,
-                "default_open": spec.get("default_open") is True,
-                "shared": spec.get("shared") is True,
+                "default_open": not retired and spec.get("default_open") is True,
+                "shared": not retired and spec.get("shared") is True,
                 "owner_user_id": parent.user_id,
                 "created_at": parent.created_at,
                 "updated_at": parent.updated_at,

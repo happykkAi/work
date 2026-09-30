@@ -10,7 +10,7 @@
 import { getApiUrl } from "../../../api/config";
 import { getAuthToken } from "../../../api/request";
 import type { TokenUsage } from "../../../api/types";
-import { buildDashboardChatWsUrl } from "../../../api/modules/wsChat";
+import { createDashboardChatWebSocket } from "../../../api/modules/wsChat";
 import { generateId } from "../../../utils/messageParser";
 import type {
   ChatAttachment,
@@ -140,7 +140,7 @@ const pendingResumeBySession = new Map<
 /** Try to open the dashboard chat WebSocket; null if construction fails. */
 function tryOpenDashboardWs(agentId: string): WebSocket | null {
   try {
-    return new WebSocket(buildDashboardChatWsUrl(agentId));
+    return createDashboardChatWebSocket(agentId);
   } catch {
     return null;
   }
@@ -1199,7 +1199,7 @@ function handleHarnessChunk(
             : "";
         state.pendingPlanPath = pending || null;
       }
-      if (Boolean(chunk.team_wrapup)) {
+      if (chunk.team_wrapup) {
         finalizeWrapupMessages(state, speaker);
         clearSpeakerLive(state, speaker);
         // Wrap-up means members already finished — drop stale live bits

@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
 import AuthGuard from "./AuthGuard";
 
 vi.mock("../api/modules/auth", () => ({
@@ -71,10 +70,12 @@ describe("AuthGuard offline boot", () => {
 
     function NavProbe() {
       const navigate = useNavigate();
-      useEffect(() => {
-        navigate("/b");
-      }, [navigate]);
-      return <div>protected-shell</div>;
+      return (
+        <>
+          <button onClick={() => navigate("/b")}>navigate-to-b</button>
+          <div>protected-shell-a</div>
+        </>
+      );
     }
 
     render(
@@ -82,19 +83,23 @@ describe("AuthGuard offline boot", () => {
         <AuthGuard>
           <Routes>
             <Route path="/a" element={<NavProbe />} />
-            <Route path="/b" element={<div>protected-shell</div>} />
+            <Route path="/b" element={<div>protected-shell-b</div>} />
           </Routes>
         </AuthGuard>
       </MemoryRouter>,
     );
 
-    expect(await screen.findByText("protected-shell")).toBeInTheDocument();
+    expect(await screen.findByText("protected-shell-a")).toBeInTheDocument();
+    await userEvent
+      .setup()
+      .click(screen.getByRole("button", { name: "navigate-to-b" }));
+    expect(await screen.findByText("protected-shell-b")).toBeInTheDocument();
     await waitFor(() => {
       expect(authApi.getAuthStatus).toHaveBeenCalledTimes(1);
     });
-    // Give route-driven navigate identity churn a tick; gate must not re-run.
+    // The destination route remains inside the authenticated gate.
     await waitFor(() => {
-      expect(screen.getByText("protected-shell")).toBeInTheDocument();
+      expect(screen.getByText("protected-shell-b")).toBeInTheDocument();
     });
     expect(authApi.getAuthStatus).toHaveBeenCalledTimes(1);
     expect(authApi.me).toHaveBeenCalledTimes(1);

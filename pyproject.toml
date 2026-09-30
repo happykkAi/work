@@ -201,6 +201,7 @@ disable_error_code = ["attr-defined"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src", "packages/work_platform/src"]
 asyncio_mode = "auto"
 markers = [
     "live: tests that hit real LLM / external services (skipped by default)",

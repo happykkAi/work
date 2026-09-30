@@ -36,6 +36,11 @@ from octop.infra.gateway.ws import (
     WebSocketChannel,
     WebSocketHub,
 )
+from octop.infra.retired_integrations import (
+    FEISHU_DISABLED_MESSAGE,
+    ensure_integration_available,
+    is_retired_integration,
+)
 from octop.infra.utils.locale import DEFAULT_LOCALE, Locale
 
 if TYPE_CHECKING:
@@ -325,6 +330,7 @@ class Gateway:
         return self._repos.channel_repo.get(channel_id)
 
     async def create_channel(self, spec: ChannelCreateSpec) -> ChannelRow:
+        ensure_integration_available(str(spec.kind))
         config_json = json.dumps(spec.config)
         existing = self._repos.channel_repo.get_by_agent_and_name(spec.agent_id, spec.name)
         if existing is not None:
@@ -368,6 +374,20 @@ class Gateway:
         config_json: str | None = None,
         enabled: int | None = None,
     ) -> ChannelRow | None:
+        existing = self._repos.channel_repo.get(channel_id)
+        target_kind = (
+            kind if kind is not None else (existing.kind if existing is not None else None)
+        )
+        if is_retired_integration(target_kind):
+            local_disable_only = (
+                existing is not None
+                and enabled == 0
+                and kind is None
+                and name is None
+                and config_json is None
+            )
+            if not local_disable_only:
+                ensure_integration_available(target_kind)
         self._repos.channel_repo.update(
             channel_id,
             kind=kind,
@@ -681,6 +701,14 @@ class Gateway:
             )
 
     async def _register_channel(self, row: ChannelRow) -> None:
+        if is_retired_integration(row.kind):
+            self._set_runtime_status(
+                row.channel_id,
+                connected=False,
+                reason="disabled",
+                detail=FEISHU_DISABLED_MESSAGE,
+            )
+            return
         if not self._channel_manager or not self._processor:
             return
         config = self._config_from_row(row)

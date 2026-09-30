@@ -15,8 +15,10 @@ from scalar_fastapi import get_scalar_api_reference
 
 from octop.api.middleware.jwt_auth import install as install_jwt_auth
 from octop.api.middleware.setup_lockdown import install as install_setup_lockdown
+from octop.api.middleware.work_boundary import WorkBoundary
 from octop.api.openapi_meta import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import ensure_integration_available, is_retired_integration
 from octop.infra.server import OctopServer
 from octop.infra.utils.locale import resolve_request_locale
 
@@ -117,6 +119,30 @@ def build_app(server: OctopServer) -> FastAPI:
     app.state.octop_server = server
     _install_exception_handlers(app)
 
+    @app.middleware("http")
+    async def retired_integration_routes(request: Request, call_next: Any) -> Any:
+        path_parts = request.url.path.strip("/").split("/")
+        if (
+            request.method == "DELETE"
+            and len(path_parts) == 3
+            and path_parts[:2] == ["api", "connector-instances"]
+            and path_parts[2].startswith("custom:")
+        ):
+            return await call_next(request)
+        retired_part = next(
+            (part for part in request.url.path.split("/") if is_retired_integration(part)),
+            None,
+        )
+        if retired_part is not None:
+            try:
+                ensure_integration_available(retired_part)
+            except OctopError as exc:
+                return JSONResponse(
+                    status_code=exc.status,
+                    content=exc.to_envelope(locale=resolve_request_locale(request)),
+                )
+        return await call_next(request)
+
     if cfg and cfg.cors_origins:
         from octop.api.deps import ACCESS_TOKEN_RESPONSE_HEADER
 
@@ -131,6 +157,7 @@ def build_app(server: OctopServer) -> FastAPI:
 
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
+    app.add_middleware(WorkBoundary, server=server)
 
     from octop.infra.setup.tls.challenge import challenge_store
 
@@ -190,6 +217,8 @@ def build_app(server: OctopServer) -> FastAPI:
         user_roles,
         users,
         voice,
+        work_entry,
+        work_runtime,
         workspace,
     )
     from octop.api.routers.filesystem import router as filesystem_router
@@ -219,10 +248,12 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(agent_tools.router, "/api", ["agents"]),
             _RouterMount(acp.router, "/api", ["agents"]),
             _RouterMount(chat.router, "/api", ["chat"]),
+            _RouterMount(work_entry.router, "/api", ["work"]),
             _RouterMount(slash.router, "/api", ["slash"]),
             _RouterMount(connectors.router, "/api", ["connectors"]),
             _RouterMount(knowledge_bases.router, "/api", ["knowledge"]),
             _RouterMount(internal_mcp.router, "/api", ["internal-mcp"]),
+            _RouterMount(work_runtime.router, "/api", ["internal-work"]),
             _RouterMount(channels.router, "/api", ["channels"]),
             _RouterMount(cron.router, "/api", ["cron"]),
             _RouterMount(settings.router, "/api", ["settings"]),

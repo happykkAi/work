@@ -39,7 +39,6 @@ export const CHANNEL_KEYS: ChannelKey[] = [
   "weixin",
   "qq",
   "wecom",
-  "feishu",
   "yuanbao",
   "dingtalk",
   "telegram",

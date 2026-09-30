@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import extract_websocket_auth, resolve_user_from_token
 from octop.api.routers.chat.sse import json_chunk_default
 from octop.infra.errors import OctopError
 
@@ -27,6 +27,12 @@ async def dashboard_notifications_ws(
 ) -> None:
     """Push ``dashboard_push`` frames to the signed-in user's dashboard clients."""
     server = websocket.app.state.octop_server
+    token, accepted_subprotocol = extract_websocket_auth(
+        query_token=token,
+        authorization=websocket.headers.get("Authorization"),
+        protocol_header=websocket.headers.get("Sec-WebSocket-Protocol"),
+        forwarded=False,
+    )
     if not token:
         await websocket.close(code=4001, reason="missing token")
         return
@@ -43,7 +49,7 @@ async def dashboard_notifications_ws(
     hub = server.app_runtime.gateway.ws_hub
 
     connection_id = uuid.uuid4().hex
-    await websocket.accept()
+    await websocket.accept(subprotocol=accepted_subprotocol)
 
     async def send_frame(frame: dict[str, Any]) -> None:
         if websocket.application_state != WebSocketState.CONNECTED:

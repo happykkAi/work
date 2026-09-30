@@ -2,7 +2,7 @@
 name: octop-assistant
 description: >-
   帮助用户配置和管理 Octop 自身。当用户提出以下类型的问题时使用此 skill：
-  配置或切换 LLM 模型与 Provider；添加或管理 IM 通道（飞书、企业微信、QQ 等）；
+  配置或切换 LLM 模型与 Provider；添加或管理 IM 通道（企业微信、QQ 等）；
   启用或禁用 Agent Skill；管理定时任务；备份与升级；询问「octop 怎么配置」、
   「怎么接入 xxx」「怎么换模型」「怎么加通道」「CLI 怎么用」等操作性问题。
   即使用户只是问「怎么配置 octop」，也应触发此 skill。
@@ -19,6 +19,8 @@ metadata:
 ---
 
 # Octop Assistant ⚙️
+
+飞书相关功能已停用，历史记录保留。不得配置、授权、读取、写入或建议绕过停用状态。
 
 你是 Octop 的配置助手。帮助用户通过 **CLI**（`octop` 命令）配置和管理 Octop 服务器、Agent、通道与模型。
 
@@ -65,7 +67,7 @@ Agent 自身无法代替用户触发斜杠指令时，明确提示用户发送 `
 
 因此：
 
-- 用户从 **Dashboard / 飞书 / QQ 等** 问「帮我配置」时，**不要假设** `octop config show` 就是 TA 的账号。
+- 用户从 **Dashboard / QQ 等** 问「帮我配置」时，**不要假设** `octop config show` 就是 TA 的账号。
 - Agent 代跑 `execute_shell_command` 时，CLI 实际用的是 **服务器上已保存的 token**（常为管理员安装时登录的账号）。
 - 若 CLI 未登录或登录者不是目标用户，应 **引导用户自己在终端 `octop user login`**，或 **在 Dashboard 设置页完成**（Provider、通道、环境变量等），而不是反复执行会 401 的命令。
 
@@ -256,12 +258,6 @@ octop --agent "$AGENT_ID" channel get <channel_id>
 ### 创建通道（直接执行）
 
 ```bash
-# 飞书示例
-octop --agent "$AGENT_ID" channel create \
-  --kind feishu \
-  --name feishu \
-  --config '{"app_id":"cli_xxx","app_secret":"xxx","enabled":true}'
-
 # Discord 示例
 octop --agent "$AGENT_ID" channel create \
   --kind discord \
@@ -292,18 +288,10 @@ octop --agent "$AGENT_ID" channel config
 
 逐步选择通道类型并填写凭据。企业微信 / 微信支持 QR 绑定子命令。
 
-### 飞书 Bot 自动创建（指导用户或 admin 执行）
-
-```bash
-octop --agent "$AGENT_ID" channel feishu-setup
-octop --agent "$AGENT_ID" channel feishu-setup --dry-run
-```
-
 ### 各通道 `kind` 与常见 config 字段
 
 | kind | 常见 config 字段 |
 |------|-------------------|
-| `feishu` / `lark` | `app_id`, `app_secret` |
 | `discord` | `bot_token` |
 | `wecom` | `corp_id`, `agent_id`, `secret` |
 | `weixin` | 扫码绑定，见 `channel bind` |
@@ -483,12 +471,9 @@ octop plugin uninstall <plugin_id>
 2. 若 Provider 未配置 → 指导 `octop models config` 或 `provider create`
 3. `octop models active --provider <名> --model <id>`
 
-### 场景：接入飞书
+### 场景：用户询问飞书
 
-1. `octop --agent "$AGENT_ID" channel list`
-2. 有凭据 → `channel create --kind feishu --config '{...}'`
-3. 无凭据 → `channel feishu-setup` 或 `channel config`
-4. `channel test <id>` 验证
+说明飞书相关功能已停用，历史记录保留；不要要求凭据或提供 CLI、OAuth、MCP 等绕行方法。
 
 ### 场景：启用某个 Skill
 

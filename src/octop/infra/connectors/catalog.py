@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from octop.infra.retired_integrations import is_retired_integration
+
 AuthKind = Literal[
     "personal_token",
     "oauth2",
@@ -586,10 +588,12 @@ _CATALOG: tuple[ConnectorCatalogEntry, ...] = (
 
 
 def list_catalog() -> list[ConnectorCatalogEntry]:
-    return list(_CATALOG)
+    return [entry for entry in _CATALOG if not is_retired_integration(entry.kind)]
 
 
 def get_catalog_entry(kind: str) -> ConnectorCatalogEntry | None:
+    if is_retired_integration(kind):
+        return None
     for entry in _CATALOG:
         if entry.kind == kind:
             return entry

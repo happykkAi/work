@@ -10,16 +10,22 @@ import {
 
 const listMock = vi.fn();
 
-vi.mock("../../../api/modules/octopThreads", () => ({
-  octopThreadsApi: {
-    list: (...args: unknown[]) => listMock(...args),
-    create: vi.fn(),
-    delete: vi.fn(),
-    patch: vi.fn(),
-    rename: vi.fn(),
-    rebind: vi.fn(),
-  },
-}));
+vi.mock("../../../api/modules/octopThreads", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../../api/modules/octopThreads")
+  >();
+  return {
+    ...actual,
+    octopThreadsApi: {
+      list: (...args: unknown[]) => listMock(...args),
+      create: vi.fn(),
+      delete: vi.fn(),
+      patch: vi.fn(),
+      rename: vi.fn(),
+      rebind: vi.fn(),
+    },
+  };
+});
 
 function threadRow(threadId: string, agentExtra?: Partial<{ title: string }>) {
   return {

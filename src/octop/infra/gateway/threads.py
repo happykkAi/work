@@ -39,6 +39,12 @@ class ThreadRegistry:
         return f"{agent_id}:{channel_type}:{channel_subject_id}:{channel_chat_type}"
 
     @staticmethod
+    def channel_type_from_key(session_key: str) -> str | None:
+        """Return the channel segment from a canonical session key."""
+        parts = session_key.split(":", 3)
+        return parts[1] if len(parts) == 4 and parts[1] else None
+
+    @staticmethod
     def peer_session_key(source_session_key: str, agent_id: str) -> str | None:
         """Rewrite the agent segment of a session key; keep channel / subject / chat type."""
         parts = source_session_key.split(":", 3)

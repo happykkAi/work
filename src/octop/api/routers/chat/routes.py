@@ -248,6 +248,11 @@ async def polish_prompt(
     draft = body.text.strip()
     if not draft:
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, "text is required")
+    if server.app_runtime.work_execution_required:
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "Prompt polish is disabled in Work mode until it uses an authorized execution run",
+        )
 
     harness = server.app_runtime.agent_registry.get_agent(agent_id)
     model_ref = (body.default_model or "").strip() or harness.config.pick_default_model_ref()

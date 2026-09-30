@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-import { getAuthToken } from "../api/request";
+import { createAuthenticatedWebSocket } from "../api/modules/wsAuth";
 import { normalizeUrl } from "../utils/normalizeUrl";
 import {
   closeBrowserTabOptimistic,
@@ -34,14 +34,12 @@ interface ConnectOptions {
 }
 
 function buildWsUrl(width: number, height: number): string {
-  const token = getAuthToken();
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
   const base = `${protocol}://${window.location.host}/api/browser-stream/ws`;
   const params = new URLSearchParams({
     width: String(width),
     height: String(height),
   });
-  if (token) params.set("token", token);
   return `${base}?${params.toString()}`;
 }
 
@@ -98,7 +96,7 @@ export function useBrowserStream() {
       const wsUrl = buildWsUrl(width, height);
       let ws: WebSocket;
       try {
-        ws = new WebSocket(wsUrl);
+        ws = createAuthenticatedWebSocket(wsUrl);
       } catch (err) {
         console.error("[BrowserStream] Failed to create WebSocket:", err);
         updateStatus("error");

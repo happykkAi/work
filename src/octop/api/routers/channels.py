@@ -25,6 +25,11 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.bot_creators.feishu_runner import extract_feishu_credentials
 from octop.infra.gateway.channels import dingtalk_registration, qr_bind
 from octop.infra.gateway.gateway import ChannelKind
+from octop.infra.retired_integrations import (
+    FEISHU_DISABLED_MESSAGE,
+    ensure_integration_available,
+    is_retired_integration,
+)
 from octop.infra.utils.locale import DEFAULT_LOCALE, resolve_request_locale
 from octop.infra.utils.subprocess_io import parse_subprocess_json_lines
 
@@ -81,8 +86,12 @@ def _row_to_dict(
         "agent_id": r.agent_id,
         "kind": r.kind,
         "name": r.name,
-        "enabled": bool(r.enabled),
+        "enabled": bool(r.enabled) and not is_retired_integration(r.kind),
     }
+    if is_retired_integration(r.kind):
+        out.update(
+            {"retired": True, "status": "disabled", "status_message": FEISHU_DISABLED_MESSAGE}
+        )
     if gateway is not None:
         runtime = gateway.runtime_status_to_dict(r.channel_id, locale=locale)
         if runtime is not None:
@@ -95,9 +104,18 @@ def _row_to_detail(
 ) -> dict[str, Any]:
     detail = _row_to_dict(r, gateway=gateway, locale=locale)
     try:
-        detail["config"] = json.loads(r.config_json or "{}")
+        config = json.loads(r.config_json or "{}")
     except json.JSONDecodeError:
-        detail["config"] = {}
+        config = {}
+    if is_retired_integration(r.kind):
+        config = {
+            key: value
+            for key, value in config.items()
+            if not any(
+                secret in key.casefold() for secret in ("secret", "token", "password", "credential")
+            )
+        }
+    detail["config"] = config
     return detail
 
 
@@ -140,6 +158,7 @@ async def create_channel(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    ensure_integration_available(str(body.kind))
     from octop.infra.gateway.gateway import ChannelCreateSpec  # noqa: PLC0415
     from octop.infra.utils.ulid import new_ulid as _new_ulid  # noqa: PLC0415
 
@@ -189,6 +208,16 @@ async def patch_channel(
     existing = server.app_runtime.gateway.get_channel(channel_id)
     if existing is None or existing.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "channel not found")
+    if is_retired_integration(existing.kind):
+        if (
+            body.enabled is not False
+            or body.kind is not None
+            or body.name is not None
+            or body.config is not None
+        ):
+            ensure_integration_available(existing.kind)
+    elif body.kind is not None:
+        ensure_integration_available(str(body.kind))
     row = await server.app_runtime.gateway.update_channel(
         channel_id,
         kind=str(body.kind) if body.kind is not None else None,
@@ -230,6 +259,7 @@ async def test_channel(
     existing = server.app_runtime.gateway.get_channel(channel_id)
     if existing is None or existing.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "channel not found")
+    ensure_integration_available(existing.kind)
     return cast(
         dict[str, Any],
         await server.app_runtime.gateway.probe_channel(
@@ -249,6 +279,7 @@ async def probe_channel_config(
 ) -> dict[str, Any]:
     """Probe channel credentials from a draft config (no save required)."""
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    ensure_integration_available(str(body.kind))
     return cast(
         dict[str, Any],
         await server.app_runtime.gateway.probe_config(

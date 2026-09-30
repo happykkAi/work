@@ -1,6 +1,6 @@
 /** Catalog of App-ID OAuth providers shown under the admin SSO OAuth family. */
 
-export type OauthAppKind = "feishu" | "dingtalk" | "wecom";
+export type OauthAppKind = "dingtalk" | "wecom";
 
 export interface OauthProviderDef {
   kind: OauthAppKind;
@@ -11,7 +11,7 @@ export interface OauthProviderDef {
   /** Fallback login button label when display_name is empty. */
   defaultNameKey: string;
   enabledAriaKey: string;
-  /** Feishu/Lark region selector. */
+  /** Retained for reading older provider definitions; no Feishu provider is exposed. */
   hasRegion?: boolean;
   /** WeCom CorpApp Agent ID in ``extra.agent_id``. */
   hasAgentId?: boolean;
@@ -29,15 +29,6 @@ export interface OauthProviderDef {
 }
 
 export const OAUTH_APP_PROVIDERS: OauthProviderDef[] = [
-  {
-    kind: "feishu",
-    available: true,
-    titleKey: "adminSso.feishuTitle",
-    descKey: "adminSso.feishuDesc",
-    defaultNameKey: "login.providerKind.feishu",
-    enabledAriaKey: "adminSso.feishuEnabled",
-    hasRegion: true,
-  },
   {
     kind: "dingtalk",
     available: true,

@@ -55,6 +55,8 @@ export interface ConnectorInstance {
   display_name: string;
   description?: string | null;
   status: string;
+  retired?: boolean;
+  status_message?: string | null;
   mcp_server_name: string;
   has_credentials: boolean;
   /** When true, chat composer pre-selects this connector. */

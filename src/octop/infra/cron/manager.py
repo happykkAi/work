@@ -15,6 +15,7 @@ from octop.infra.cron.trigger import build_trigger
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.retired_integrations import ensure_integration_available
 
 if TYPE_CHECKING:
     from octop.infra.db.repos.cron import CronJobRow
@@ -110,6 +111,7 @@ class CronManager:
             agent_id=spec.agent_id,
             user_id=spec.user_id,
         )
+        ensure_integration_available(ThreadRegistry.channel_type_from_key(session_key))
         await self._ensure_session(
             session_key,
             agent_id=spec.agent_id,
@@ -183,6 +185,21 @@ class CronManager:
             existing = self._repos.cron_repo.get(cron_id)
             if existing is None:
                 raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
+            blocked = self._make_job(existing).block_retired_target()
+            if blocked is not None:
+                if (
+                    enabled_bool is False
+                    and all(
+                        value is None
+                        for value in (trigger, name, prompt, session_key, fresh_thread, task_type)
+                    )
+                    and model is UNSET
+                    and mcp_servers is UNSET
+                ):
+                    row = self._repos.cron_repo.get(cron_id)
+                    assert row is not None
+                    return row
+                raise blocked
             repo_kwargs: dict[str, Any] = {
                 "trigger": trigger,
                 "name": name,
@@ -223,6 +240,9 @@ class CronManager:
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
         job = self._make_job(row)
+        blocked = job.block_retired_target()
+        if blocked is not None:
+            raise blocked
         logger.info("CronJob %s triggered manually", cron_id)
         if wait:
             await job.run(raise_on_error=True)
@@ -240,6 +260,9 @@ class CronManager:
     def _schedule(self, row: Any) -> None:
         if not row.enabled:
             return
+        job = self._make_job(row)
+        if job.block_retired_target() is not None:
+            return
         try:
             trigger = build_trigger(row.trigger, timezone=self._timezone)
         except OctopError:
@@ -249,7 +272,6 @@ class CronManager:
                 row.trigger,
             )
             return
-        job = self._make_job(row)
         if self._scheduler.get_job(row.cron_id):
             self._scheduler.remove_job(row.cron_id)
         self._scheduler.add_job(

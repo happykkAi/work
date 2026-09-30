@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from octop.infra.retired_integrations import ensure_integration_available
+
 _INSTALL_TIMEOUT_S = 300.0
 _VERSION_RE = re.compile(r"(\d+\.\d+\.\d+(?:[-+][\w.]+)?)")
 # fnOS / 容器里 Octop 常以非 root 用户运行，npm 全局目录（/usr/local）不可写，
@@ -32,16 +34,6 @@ class CliInstallSpec:
 
 
 _SPECS: dict[str, CliInstallSpec] = {
-    "feishu-cli": CliInstallSpec(
-        kind="feishu-cli",
-        binary="lark-cli",
-        npm_package="@larksuite/cli",
-        doc_url="https://github.com/larksuite/cli",
-        guide_url=(
-            "https://open.feishu.cn/document/mcp_open_tools/feishu-cli/"
-            "set-up-lark-cli-for-ai-agents-in-openclaw_hermes.md"
-        ),
-    ),
     "wecom-cli": CliInstallSpec(
         kind="wecom-cli",
         binary="wecom-cli",
@@ -118,6 +110,7 @@ def ensure_cli_path() -> str:
 
 
 def cli_install_status(kind: str) -> dict[str, Any]:
+    ensure_integration_available(kind)
     ensure_cli_path()
     spec = get_cli_install_spec(kind)
     if spec is None:
@@ -139,6 +132,7 @@ def cli_install_status(kind: str) -> dict[str, Any]:
 
 def install_connector_cli(kind: str) -> dict[str, Any]:
     """Ensure the host CLI is installed. Never raises for install failure — returns ok=False."""
+    ensure_integration_available(kind)
     status = cli_install_status(kind)
     if status["installed"]:
         return {
