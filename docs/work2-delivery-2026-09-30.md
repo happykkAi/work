@@ -29,16 +29,19 @@ No changes to the Hub site are in scope.
 | Legacy business migration/reconciliation | Data-preservation rehearsal PASS; activation NOT_RUN |
 | Browser institution/project/task/persistence/file flow | NOT_RUN |
 | Version upgrade and two recovery scenarios | NOT_RUN |
-| Final candidate full gates/review | NOT_RUN |
+| Final candidate full gates/review | Previous pushed SHA checked; new review repairs require final gates |
 | Controlled preproduction | BLOCKED by above gates |
 | Production switch | BLOCKED by above gates |
 
 Existing deployment workflow is in `happykkAi/shegongai-agent-lab`
 (`deploy-ucloud.yml`, production environment), with a separate production migration
-workflow. It packages the old Node/Drizzle application; it is not yet a Work2
-Python/PostgreSQL release contract. `happykkAi/work` has no configured Actions
-secrets or environments at this read-only check. These facts must be reconciled
-before deployment; the legacy workflow must not be invoked for Work2 as-is.
+workflow. It packages the old Node/Drizzle application; it is not a Work2
+Python/PostgreSQL release contract. GitHub environments `work2-preproduction`
+and `work2-production` were subsequently created in `happykkAi/work`; they have
+no protection rules, branch policy or configured deployment credentials. No
+Work2 deployment workflow or server activation contract has been installed.
+Empty environments are not release approval. The legacy workflow must not be
+invoked for Work2 as-is.
 
 ## Runtime ownership and authority repairs
 
@@ -183,3 +186,98 @@ commit. Manual dispatch allows the same gate to verify the actual merged main
 commit later. The pipeline ordering and portable Python release/tag also have
 regression contracts. Image construction/run and CI upload remain pending until
 their actual step results; a passing YAML contract is not an image acceptance.
+
+## Checked delivery baseline and subsequent review repairs
+
+For pushed source `0eedc803b24c6b09d0432bf882e540bd91eccb72`:
+
+- Local `make check-all PYTEST_JOBS=4`: exit 0, 3944 passed / 25 skipped /
+  13 warnings (452.61s), `.superpowers/delivery/check-all-0eedc80.log`.
+- Dashboard: exit 0, 1089 passed / 207 files (100.61s), separate suite; not
+  included in 3944. `.superpowers/delivery/dashboard-0eedc80.log`.
+- Real PostgreSQL, multi-process, native backup/restore and distribution:
+  exit 0, 94 passed / 46 subtests / 0 skipped (10.25s),
+  `.superpowers/delivery/postgresql-contracts-0eedc80.log`.
+- Work CI `36694198821` passed, including its real PostgreSQL job, isolated
+  contracts, Dashboard, x86_64 image build, no-network import/dependency check,
+  image export and artifact retention. Desktop `36694198770` and CodeQL
+  `36694198803` passed. Linux standard CI passed; Windows in `36694198779`
+  failed 2 / passed 3842 / skipped 125 (2144.01s).
+
+The full-gate 25 skips are 9 platform-specific cases (3 `/root`, 6 Linux/bwrap),
+15 PostgreSQL cases lacking the URL in the parallel gate, and 1 independent
+Work-wheel case lacking the artifact variable. The latter 16 were executed in
+the serial real-database/distribution gate; this does not turn the full gate
+into a single zero-skip run. Evidence: `skip-reasons-0eedc80.log`.
+The 13 Python warnings comprise 8 Lark SDK UTC/event-loop deprecations,
+4 websockets/uvicorn deprecations and 1 Discord audioop deprecation. Frontend
+ESLint warnings and jsdom/Vite diagnostics are separate, not declared harmless
+solely because their exit code is zero.
+
+Independent review of `232030f..0eedc80` found two Important issues:
+
+1. Ordinary authenticated knowledge indexing and voice could call remote
+   models without a Work execution context, policy or quota check. Actual
+   JWT/router/background/adapter reproductions with transport-only stubs
+   returned 201/200 and one outbound stub call each, without control checks.
+   Work now rejects remote embedding/OCR and server voice at shared domain
+   boundaries, including voice probes. Startup retains remote embedding jobs;
+   with remote OCR configured it retains images/PDFs without resetting their
+   state while continuing local document indexing. No remote-to-local fallback
+   is introduced. Standalone Octop and local parsing/storage remain available.
+   The original negative tests failed before repair. Final focused regression:
+   179 passed, exit 0; strict mypy passed. This includes real authenticated HTTP
+   403 results for ordinary knowledge/STT/TTS requests, zero model transport
+   calls, and local document controls. Security evidence is in the standalone
+   Codex Security collection for this delivery directory (`optional-models-*`).
+2. Root Octop wheel and desktop packages omitted required `work_platform`;
+   pytest's source path and Docker's separate install masked startup failure.
+   The root wheel and sdist now include those modules from their existing
+   source tree. Portable and target-image smoke checks import the actual
+   server and launch modules. A built wheel extracted into an isolated directory
+   now imports startup with no source-tree path or extra Work installation.
+   This artifact test first failed on missing Work modules and then passed.
+
+The Windows failures are not skips: the ADB authentication test incorrectly
+relied on the host being POSIX, and the workflow reader relied on the Windows
+default cp1252 encoding. The test now uses an isolated POSIX selector for its
+authentication-only path (no PTY/process), and workflow reads explicitly use
+UTF-8. The original assertions remain. Focused local verification: 6 passed /
+42 subtests, exit 0. Real Windows verification remains pending for the new SHA.
+
+The repeated `retiredFeatures` locale objects are removed without changing
+their retained text. CodeRabbit did not complete: its free-plan whole-diff
+limit rejected 192 files (150 maximum), exit 1; no plan purchase or fabricated
+review result. The separate independent review is not a CodeRabbit result.
+
+These changes supersede the historical `deploy/work/build-manifest.json`;
+that file is explicitly marked historical, not a current release identity.
+Final source-bound checks/artifacts must be regenerated after these commits.
+Legacy import still returns `IMPORTED_NOT_ACTIVATED`; project/member identity
+activation, migrated history/files in the UI, the promised project/result/review
+flow, actual MariaDB source conversion, version upgrade and both business
+recovery scenarios remain unimplemented or NOT_RUN. They are product/code
+gaps, not external-credential excuses. Preproduction/production gates remain
+closed. No merge, preproduction or production operation has occurred.
+
+## Upload and handoff scope
+
+The latest user instruction is to upload the current work to GitHub and deliver
+a handoff document; do not work on FnOS or continue server deployment in this
+handoff turn. The earlier choice of an independent test entry, with old Work
+untouched, remains recorded but no such entry was deployed.
+
+Security repair `4a824eadeab9f91c006b57786bd63bef9f8eeb24` is pushed.
+Distribution/Windows repair `5d37e33e8b87bab42a522e66b6d7e279f29aa03d`
+has fresh focused verification: 7 passed / 42 subtests, exit 0, including the
+actual built wheel/sdist startup check. Its required local hook passed static
+checks, 4 change-aware tests / 2 deselected, and Dashboard build; it is not a
+final full gate. Evidence: `.superpowers/delivery/distribution-windows-final.log`
+and `.superpowers/delivery/distribution-commit.log`.
+
+Read-only server checks found x86_64, Docker 29.1.3, no `docker compose` or
+`docker-compose`, no `/etc/work2` or `/opt/work2`, approximately 1.6 GiB available
+RAM and 6.2 GiB free disk at the check. Existing services/data were not changed.
+No server keys were copied into GitHub, no production exports were taken, and
+no DNS or Hub changes were made. See `docs/work2-handoff-2026-09-30.md` for
+the handoff, evidence boundaries and continuation commands.

@@ -1,5 +1,7 @@
 {
   "manifest_version": 2,
+  "record_type": "historical_local_candidate_not_current_delivery",
+  "current_delivery_record": "docs/work2-delivery-2026-09-30.md",
   "source": {
     "work_sha": null,
     "octop_sha": "232030f46c5450801ca87809f8a4da57aefc5a05",
@@ -51,8 +53,8 @@
   ],
   "artifact_source_status": {
     "snapshot": "final-fixed-20260930",
-    "matches_current_source": true,
-    "reason": "Final source inventory unchanged after complete gate; Octop and work_platform wheel files byte-compared against current source.",
+    "matches_current_source": false,
+    "reason": "Historical pre-delivery candidate. Subsequent committed delivery changes supersede this snapshot; use the delivery record and source-bound CI artifacts.",
     "artifact_directory": ".superpowers/sdd/Work2_Octop_完整替换与持续升级计划_20260927/real-env-20260930/final-fixed-build"
   },
   "local_image": {
