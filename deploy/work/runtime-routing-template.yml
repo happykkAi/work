@@ -1,6 +1,24 @@
-# Fixed-instance Work entry acceptance template. PostgreSQL databases and roles
-# are pre-created; this file never embeds credentials or exposes runtime ports.
+# Fixed-instance Work entry acceptance template. All Work control URLs MUST use
+# one authoritative database with distinct provisioned entry/A/B roles. Octop
+# private databases stay separate. Migrate/provision before starting runtimes.
+# No credentials are embedded and no runtime ports are exposed.
 services:
+  work-control:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: work_control
+      POSTGRES_PASSWORD_FILE: /run/secrets/work-control-owner-password
+    secrets: [work-control-owner-password]
+    volumes: ["work-control-data:/var/lib/postgresql/data"]
+    # One DB endpoint on each isolated institution network; no shared runtime net.
+    networks: [entry-org-a-private, entry-org-b-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d work_control"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
   work-entry:
     image: ${WORK_RUNTIME_IMAGE:?set a locally built image by digest}
     entrypoint: ["/bin/sh", "-ec"]
@@ -132,11 +150,14 @@ networks:
     internal: true
 
 volumes:
+  work-control-data:
   work-entry-data:
   org-a-data:
   org-b-data:
 
 secrets:
+  work-control-owner-password:
+    file: ${WORK_CONTROL_OWNER_PASSWORD_FILE:?point to the migration-owner password file, never mount in runtime}
   entry-octop-database-url:
     file: ${WORK_ENTRY_OCTOP_DATABASE_URL_FILE:?point to the entry Octop database URL file}
   entry-work-control-database-url:

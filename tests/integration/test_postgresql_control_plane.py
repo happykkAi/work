@@ -39,6 +39,20 @@ def _consume_handoff_process(args):
         control.close()
 
 
+def _start_second_executor(args):
+    from octop.infra.work.control_plane import WorkControlPlane
+
+    conninfo, binding, context = args
+    control = WorkControlPlane(conninfo, binding.runtime_id, expected_runtime_binding=binding)
+    try:
+        activated = control.activate_run(context)
+        control.block_run(context)
+        control.finish_run(context, "completed")
+        return os.getpid(), activated
+    finally:
+        control.close()
+
+
 def _reset_public_schema(pool: object) -> None:
     with pool.connect() as conn:  # type: ignore[attr-defined]
         conn.execute("DROP SCHEMA public CASCADE")
@@ -62,7 +76,7 @@ def _pg_payload_from_url(url: str) -> dict[str, object]:
 
 @requires_postgresql
 @pytest.mark.postgresql
-def test_current_work_schema_starts_with_dml_only_role() -> None:
+def test_current_work_schema_starts_with_restricted_role() -> None:
     import psycopg
     from psycopg import sql
     from psycopg.conninfo import make_conninfo
@@ -70,6 +84,7 @@ def test_current_work_schema_starts_with_dml_only_role() -> None:
     from octop.infra.db.migrate import run_migrations
     from octop.infra.db.pool import PostgresPool
     from octop.infra.work.control_plane import WorkControlPlane
+    from octop.infra.work.permissions import provision_principal
 
     role = "work_test_" + uuid.uuid4().hex
     password = uuid.uuid4().hex
@@ -97,6 +112,7 @@ def test_current_work_schema_starts_with_dml_only_role() -> None:
                 ).format(sql.Identifier(role))
             )
             restricted = make_conninfo(_conninfo(), user=role, password=password)
+            provision_principal(_conninfo(), role, kind="entry", runtime_id="restricted-runtime")
             pool = PostgresPool(restricted)
             try:
                 run_migrations(pool)
@@ -112,6 +128,8 @@ def test_current_work_schema_starts_with_dml_only_role() -> None:
             control = WorkControlPlane(restricted, "restricted-runtime")
             control.close()
             with psycopg.connect(restricted, autocommit=True) as runtime:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    runtime.execute("UPDATE work_organization_policies SET available=TRUE")
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
                     runtime.execute("CREATE TABLE public.forbidden_runtime_ddl(id INTEGER)")
                 with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -535,6 +553,23 @@ def test_work_control_plane_revocation_and_restart_block_pending_execution() -> 
         assert resolved == local_binding
         assert control.activate_run(context) is True
         assert control.reserve_attempt(context, "model:local_stub", "attempt-a") is True
+        # Starting another OS process must neither recover this live run nor own it.
+        with ProcessPoolExecutor(
+            max_workers=2, mp_context=get_context("spawn"), max_tasks_per_child=1
+        ) as executor:
+            competing = list(
+                executor.map(_start_second_executor, [(conninfo, local_binding, context)] * 2)
+            )
+        assert len({pid for pid, _ in competing}) == 2
+        assert all(pid != os.getpid() and activated is False for pid, activated in competing)
+        assert control.context_is_current(context) is True
+        with control._db.connect() as conn:
+            assert (
+                conn.execute(
+                    "SELECT status FROM work_external_attempts WHERE attempt_id='attempt-a'"
+                ).fetchone()["status"]
+                == "reserved"
+            )
         with ThreadPoolExecutor(max_workers=20) as executor:
             reserved = list(
                 executor.map(
@@ -567,6 +602,18 @@ def test_work_control_plane_revocation_and_restart_block_pending_execution() -> 
                 is None
             )
 
+        terminal, _ = issue_execution_context(
+            control,
+            octop_user_id=41,
+            agent_id="agent-a",
+            run_id="terminal-run",
+            budget_scope_id="terminal-thread",
+            connection_id="a" * 32,
+        )
+        assert control.activate_run(terminal)
+        assert control.reserve_attempt(terminal, "model:local_stub", "terminal-attempt")
+        control.finish_run(terminal, "failed")
+
         with control._db.transaction() as conn:
             conn.execute(
                 "UPDATE work_memberships SET status='removed', revision=2 "
@@ -575,6 +622,43 @@ def test_work_control_plane_revocation_and_restart_block_pending_execution() -> 
         assert control.resolve_grant(41, "agent-a") is None
         assert control.resolve_runtime_grant("user-a", "agent-a") is None
         assert control.context_is_current(context) is False
+        # A lost PostgreSQL session cannot reconnect and regain old execution rights.
+        with control._db.transaction() as conn:
+            conn.execute("SELECT pg_terminate_backend(?)", (control._executor.info.backend_pid,))
+        assert control.context_is_current(context) is False
+        replacement = WorkControlPlane(
+            conninfo, "runtime-a", expected_runtime_binding=local_binding
+        )
+        try:
+            control.finish_run(context, "completed")
+            control.finish_attempt("attempt-a", "completed")
+            with replacement._db.connect() as conn:
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_runs WHERE run_id='terminal-run'"
+                    ).fetchone()["status"]
+                    == "failed"
+                )
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_external_attempts WHERE attempt_id='terminal-attempt'"
+                    ).fetchone()["status"]
+                    == "uncertain"
+                )
+                assert (
+                    conn.execute("SELECT status FROM work_runs WHERE run_id='run-a'").fetchone()[
+                        "status"
+                    ]
+                    == "blocked_restart"
+                )
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_external_attempts WHERE attempt_id='attempt-a'"
+                    ).fetchone()["status"]
+                    == "uncertain"
+                )
+        finally:
+            replacement.close()
     finally:
         control.close()
 
@@ -608,7 +692,7 @@ def test_work_control_plane_revocation_and_restart_block_pending_execution() -> 
 
 @requires_postgresql
 @pytest.mark.postgresql
-def test_work_control_plane_v3_to_v5_migration_is_repeatable() -> None:
+def test_work_control_plane_v3_to_v7_migration_is_repeatable() -> None:
     from octop.infra.db.pool import PostgresPool
     from octop.infra.work.control_plane import WorkControlPlane
 
@@ -626,6 +710,28 @@ def test_work_control_plane_v3_to_v5_migration_is_repeatable() -> None:
         with setup.transaction() as conn:
             conn.execute("DROP TABLE work_runtime_handoffs")
             conn.execute("ALTER TABLE work_runs DROP COLUMN connection_id")
+            conn.execute("ALTER TABLE work_runs DROP COLUMN executor_id")
+            conn.execute("DROP TABLE work_executors, work_database_principals CASCADE")
+            conn.execute("DROP FUNCTION IF EXISTS work_principal() CASCADE")
+            for table in (
+                "work_users",
+                "work_identities",
+                "work_memberships",
+                "work_agent_bindings",
+                "work_organization_policies",
+                "work_capabilities",
+                "work_runs",
+                "work_budget_counters",
+                "work_external_attempts",
+            ):
+                conn.execute(f"DROP POLICY IF EXISTS work_read ON {table}")
+            with conn.execute(
+                "SELECT proname, pg_get_function_identity_arguments(oid) AS args "
+                "FROM pg_proc WHERE pronamespace='public'::regnamespace "
+                "AND proname LIKE 'work_%'"
+            ) as cursor:
+                for row in cursor.fetchall():
+                    conn.execute(f"DROP FUNCTION public.{row['proname']}({row['args']}) CASCADE")
             conn.execute("DELETE FROM work_schema_version")
             conn.execute("INSERT INTO work_schema_version(version) VALUES (3)")
     finally:
@@ -646,7 +752,7 @@ def test_work_control_plane_v3_to_v5_migration_is_repeatable() -> None:
                 "SELECT is_nullable FROM information_schema.columns "
                 "WHERE table_name='work_runs' AND column_name='connection_id'"
             ).fetchone()
-        assert version is not None and version["version"] == 5
+        assert version is not None and version["version"] == 7
         assert table is not None and table["table_name"] == "work_runtime_handoffs"
         assert column is not None and column["is_nullable"] == "NO"
     finally:

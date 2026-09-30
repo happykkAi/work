@@ -7,8 +7,12 @@ execution remains unavailable and the Octop server can still start.
 
 from __future__ import annotations
 
+import json
 import logging
+import uuid
+from dataclasses import asdict
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from work_platform.authorization import ExecutionGrant
@@ -19,7 +23,7 @@ from work_platform.runtime_handoff import RuntimeHandoff
 
 from octop.infra.db.pool import PostgresPool
 
-_MIGRATION = 5
+_MIGRATION = 7
 _MIGRATION_LOCK = 6738912460123
 logger = logging.getLogger(__name__)
 
@@ -59,10 +63,37 @@ class WorkControlPlane:
             raise ValueError("local runtime binding does not match Work runtime ID")
         self.expected_runtime_binding = expected_runtime_binding
         self._db = PostgresPool(database_url, min_size=1, max_size=4)
-        self._migrate()
-        self._block_incomplete_runs()
+        self._executor_id = uuid.uuid4().hex
+        self._executor: Any = None
+        try:
+            self._migrate()
+            with self._db.connect() as conn:
+                owner = conn.execute(
+                    "SELECT pg_has_role(session_user, relowner, 'USAGE') AS trusted "
+                    "FROM pg_class WHERE oid='public.work_runs'::regclass"
+                ).fetchone()
+            self._secured = not bool(_read(owner, "trusted"))
+            import psycopg
+
+            # Never return a session lock to a connection pool or silently reconnect it.
+            self._executor = psycopg.connect(database_url, autocommit=True, connect_timeout=5)
+            if self._secured:
+                self._executor.execute(
+                    "SELECT public.work_register_executor(%s,%s)",
+                    (self._executor_id, self.runtime_id),
+                )
+            else:
+                self._executor.execute(
+                    "SELECT pg_advisory_lock(hashtextextended(%s, 0))", (self._executor_id,)
+                )
+            self._block_incomplete_runs()
+        except BaseException:
+            self.close()
+            raise
 
     def close(self) -> None:
+        if self._executor is not None:
+            self._executor.close()
         self._db.close()
 
     def _migrate(self) -> None:
@@ -145,6 +176,16 @@ class WorkControlPlane:
                     "UPDATE work_runs SET connection_id=run_id WHERE connection_id IS NULL"
                 )
                 conn.execute("ALTER TABLE work_runs ALTER COLUMN connection_id SET NOT NULL")
+                conn.execute("INSERT INTO work_schema_version(version) VALUES (?)", (5,))
+                version = 5
+
+            if version == 5:
+                conn.execute("ALTER TABLE work_runs ADD COLUMN executor_id TEXT")
+                conn.execute("INSERT INTO work_schema_version(version) VALUES (?)", (6,))
+                version = 6
+
+            if version == 6:
+                conn.execute(Path(__file__).with_name("runtime_permissions.sql").read_text())
                 conn.execute("INSERT INTO work_schema_version(version) VALUES (?)", (_MIGRATION,))
                 return
 
@@ -200,6 +241,7 @@ class WorkControlPlane:
                     runtime_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
                     connection_id TEXT NOT NULL,
+                    executor_id TEXT,
                     membership_revision INTEGER NOT NULL,
                     policy_revision INTEGER NOT NULL,
                     issued_at TIMESTAMPTZ NOT NULL,
@@ -245,20 +287,73 @@ class WorkControlPlane:
             )
             for statement in statements:
                 conn.execute(statement)
+            conn.execute(Path(__file__).with_name("runtime_permissions.sql").read_text())
             conn.execute("INSERT INTO work_schema_version(version) VALUES (?)", (_MIGRATION,))
 
     def _block_incomplete_runs(self) -> None:
+        if self._secured:
+            self._secure_call("work_recover_runs", self.runtime_id)
+            return
         with self._db.transaction() as conn:
-            conn.execute(
-                "UPDATE work_runs SET status='blocked_restart', finished_at=now() "
-                "WHERE runtime_id=? AND status IN ('queued','running')",
+            owners = conn.execute(
+                "SELECT DISTINCT executor_id FROM work_runs r "
+                "WHERE runtime_id=? AND (status IN ('queued','running') OR EXISTS "
+                "(SELECT 1 FROM work_external_attempts a "
+                "WHERE a.run_id=r.run_id AND a.status='reserved'))",
                 (self.runtime_id,),
+            ).fetchall()
+            for owner in owners:
+                executor_id = _read(owner, "executor_id")
+                if executor_id is not None:
+                    acquired = conn.execute(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(?, 0)) AS acquired",
+                        (executor_id,),
+                    ).fetchone()
+                    if not bool(_read(acquired, "acquired")):
+                        continue
+                # Missing v5 ownership is conservatively interrupted, never re-executed.
+                conn.execute(
+                    "UPDATE work_runs SET status='blocked_restart', finished_at=now() "
+                    "WHERE runtime_id=? AND executor_id IS NOT DISTINCT FROM ? "
+                    "AND status IN ('queued','running')",
+                    (self.runtime_id, executor_id),
+                )
+                conn.execute(
+                    "UPDATE work_external_attempts e SET status='uncertain', finished_at=now() "
+                    "FROM work_runs r WHERE e.run_id=r.run_id AND r.runtime_id=? "
+                    "AND r.executor_id IS NOT DISTINCT FROM ? "
+                    "AND e.status='reserved'",
+                    (self.runtime_id, executor_id),
+                )
+
+    def _executor_is_live(self) -> bool:
+        import psycopg
+
+        try:
+            if self._executor is None or self._executor.closed:
+                return False
+            self._executor.execute("SELECT 1")
+            return True
+        except psycopg.Error:
+            return False
+
+    def _secure_call(self, name: str, *args: Any) -> Any:
+        with self._db.transaction() as conn:
+            placeholders = ",".join("?" for _ in args)
+            row = conn.execute(f"SELECT public.{name}({placeholders}) AS value", args).fetchone()
+            return _read(row, "value")
+
+    @staticmethod
+    def _json_payload(value: Any) -> Any:
+        from psycopg.types.json import Jsonb
+
+        payload = json.loads(
+            json.dumps(
+                asdict(value),
+                default=lambda v: v.isoformat() if isinstance(v, datetime) else sorted(v),
             )
-            conn.execute(
-                "UPDATE work_external_attempts SET status='uncertain', finished_at=now() "
-                "WHERE runtime_id=? AND status='reserved'",
-                (self.runtime_id,),
-            )
+        )
+        return Jsonb(payload)
 
     def resolve_grant(self, octop_user_id: int, agent_id: str) -> ExecutionGrant | None:
         with self._db.connect() as conn:
@@ -396,6 +491,11 @@ class WorkControlPlane:
         """Atomically re-authorize and consume one target-runtime handoff."""
         if handoff.runtime_id != self.runtime_id or self.expected_runtime_binding is None:
             return None
+        if self._secured:
+            row = self._secure_call("work_consume_handoff", self._json_payload(handoff))
+            if row is None:
+                return None
+            return self.resolve_runtime_grant(handoff.work_user_id, handoff.agent_id)
         with self._db.transaction() as conn:
             rows = conn.execute(
                 "SELECT i.octop_user_id, i.work_user_id, m.organization_id, "
@@ -479,14 +579,19 @@ class WorkControlPlane:
             or context.agent_id is None
             or context.runtime_id is None
             or context.connection_id is None
+            or context.runtime_id != self.runtime_id
+            or not self._executor_is_live()
         ):
             raise ValueError("Work execution context is incomplete")
+        if self._secured:
+            self._secure_call("work_create_run", self._json_payload(context), self._executor_id)
+            return
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO work_runs(run_id, octop_user_id, work_user_id, organization_id, "
                 "agent_id, runtime_id, thread_id, connection_id, membership_revision, "
-                "policy_revision, issued_at, expires_at, status) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
+                "policy_revision, issued_at, expires_at, executor_id, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')",
                 (
                     context.run_id,
                     context.octop_user_id,
@@ -500,6 +605,7 @@ class WorkControlPlane:
                     context.policy_revision,
                     context.issued_at,
                     context.expires_at,
+                    self._executor_id,
                 ),
             )
         logger.info(
@@ -514,31 +620,53 @@ class WorkControlPlane:
         )
 
     def activate_run(self, context: ExecutionContext) -> bool:
+        if self._secured:
+            return bool(
+                self._secure_call(
+                    "work_run_transition", self._json_payload(context), self._executor_id, "running"
+                )
+            )
         with self._db.transaction() as conn:
             if not self._context_matches(conn, context, statuses=("queued",)):
                 return False
             cursor = conn.execute(
-                "UPDATE work_runs SET status='running' WHERE run_id=? AND status='queued'",
-                (context.run_id,),
+                "UPDATE work_runs SET status='running' WHERE run_id=? "
+                "AND executor_id=? AND status='queued'",
+                (context.run_id, self._executor_id),
             )
             return bool(cursor.rowcount == 1)
 
     def finish_run(self, context: ExecutionContext, status: str) -> None:
         if status not in {"completed", "failed", "blocked"}:
             raise ValueError("invalid Work run terminal status")
+        if not self._executor_is_live():
+            return
+        if self._secured:
+            self._secure_call(
+                "work_run_transition", self._json_payload(context), self._executor_id, status
+            )
+            return
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE work_runs SET status=?, finished_at=now() "
-                "WHERE run_id=? AND runtime_id=? AND status='running'",
-                (status, context.run_id, self.runtime_id),
+                "WHERE run_id=? AND runtime_id=? AND executor_id=? AND status='running'",
+                (status, context.run_id, self.runtime_id, self._executor_id),
             )
 
     def block_run(self, context: ExecutionContext) -> None:
+        if not self._executor_is_live():
+            return
+        if self._secured:
+            self._secure_call(
+                "work_run_transition", self._json_payload(context), self._executor_id, "blocked"
+            )
+            return
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE work_runs SET status='blocked', finished_at=now() "
-                "WHERE run_id=? AND runtime_id=? AND status IN ('queued','running')",
-                (context.run_id, self.runtime_id),
+                "WHERE run_id=? AND runtime_id=? AND executor_id=? "
+                "AND status IN ('queued','running')",
+                (context.run_id, self.runtime_id, self._executor_id),
             )
 
     def context_is_current(self, context: ExecutionContext) -> bool:
@@ -558,6 +686,7 @@ class WorkControlPlane:
             or context.octop_user_id is None
             or context.agent_id is None
             or context.runtime_id != self.runtime_id
+            or not self._executor_is_live()
         ):
             return False
         status_values = statuses + (statuses[-1],) * (3 - len(statuses))
@@ -578,6 +707,7 @@ class WorkControlPlane:
             "AND r.organization_id=? AND r.agent_id=? AND r.runtime_id=? AND r.thread_id=? "
             "AND r.membership_revision=? AND m.revision=r.membership_revision "
             "AND r.policy_revision=? AND p.revision=r.policy_revision "
+            "AND r.executor_id=? "
             "AND r.issued_at<=now() AND r.expires_at>now() AND r.status IN (?,?,?)",
             (
                 binding.database_role,
@@ -592,6 +722,7 @@ class WorkControlPlane:
                 context.budget_scope_id,
                 context.membership_revision,
                 context.policy_revision,
+                self._executor_id,
                 *status_values,
             ),
         ).fetchone()
@@ -622,6 +753,16 @@ class WorkControlPlane:
     def reserve_attempt(self, context: ExecutionContext, capability: str, attempt_id: str) -> bool:
         if context.agent_id is None or context.runtime_id != self.runtime_id:
             return False
+        if self._secured:
+            return bool(
+                self._secure_call(
+                    "work_reserve_attempt",
+                    self._json_payload(context),
+                    self._executor_id,
+                    capability,
+                    attempt_id,
+                )
+            )
         utc_day = datetime.now(UTC).date()
         try:
             with self._db.transaction() as conn:
@@ -679,9 +820,15 @@ class WorkControlPlane:
     def finish_attempt(self, attempt_id: str, status: str) -> None:
         if status not in {"completed", "uncertain"}:
             raise ValueError("invalid external attempt status")
+        if not self._executor_is_live():
+            return
+        if self._secured:
+            self._secure_call("work_finish_attempt", self._executor_id, attempt_id, status)
+            return
         with self._db.transaction() as conn:
             conn.execute(
-                "UPDATE work_external_attempts SET status=?, finished_at=now() "
-                "WHERE attempt_id=? AND runtime_id=? AND status='reserved'",
-                (status, attempt_id, self.runtime_id),
+                "UPDATE work_external_attempts e SET status=?, finished_at=now() "
+                "FROM work_runs r WHERE e.run_id=r.run_id AND e.attempt_id=? "
+                "AND e.runtime_id=? AND r.executor_id=? AND e.status='reserved'",
+                (status, attempt_id, self.runtime_id, self._executor_id),
             )

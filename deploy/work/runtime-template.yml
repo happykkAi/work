@@ -1,6 +1,9 @@
 # Synthetic-only acceptance template. Each organization has a separate
 # PostgreSQL instance, role credentials, data volumes, and internal network.
 # No host ports or public egress are enabled.
+# This per-instance fixture is NOT the multi-institution release topology.
+# Use runtime-routing-template.yml with one shared Work authority DB and
+# provisioned least-privilege roles for cross-institution identity/UTC budgets.
 services:
   postgres-org-a:
     image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b

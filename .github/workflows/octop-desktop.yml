@@ -50,7 +50,7 @@ concurrency:
 
 env:
   # Prefer GitHub upstream on Actions runners (npmmirror is for CN local builds).
-  PBS_BASE_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20251209
+  PBS_BASE_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20260807
   PBS_TAG: "20260807"
   PBS_PY: "3.12.13"
 

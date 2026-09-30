@@ -36,6 +36,9 @@ jobs:
           uv sync --frozen --python 3.12.13
           uv sync --project packages/work_platform --frozen --python 3.12.13
 
+      - name: Install locked dashboard dependencies before full-stack gates
+        run: npm ci --prefix dashboard --no-audit
+
       - name: Run backend and Work contracts
         run: make check-all
 
@@ -51,8 +54,7 @@ jobs:
       - name: Run dashboard tests
         run: |
           cd dashboard
-          npm ci --no-audit
-          npm test -- --run
+          npm test -- --run --maxWorkers=2
 
       - name: Build Octop and Work distributions
         run: |
@@ -63,3 +65,35 @@ jobs:
           OCTOP_SHA=$(python3 -c 'import json; print(json.load(open("deploy/work/source-manifest.example.json"))["source_repositories"]["octop_upstream"]["commit_sha"])')
           WORK_WHEEL=$(find dist/work-platform -maxdepth 1 -name 'work_platform-*.whl' -print -quit)
           python3 tools/work/verify_distribution.py "$WORK_WHEEL" --work-sha "$GITHUB_SHA" --octop-sha "$OCTOP_SHA" --output dist/work-platform/build-manifest.json
+
+  postgres:
+    name: PostgreSQL authority and multi-process gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: synthetic-ci-only
+          POSTGRES_DB: work2_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d work2_test"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      OCTOP_TEST_DATABASE_URL: postgresql://postgres:synthetic-ci-only@127.0.0.1:5432/work2_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
+        with:
+          version: 0.12.19
+          python-version: 3.12.13
+          enable-cache: true
+      - run: uv sync --frozen --python 3.12.13
+      - name: Run real database gates serially on the disposable CI database
+        run: |
+          uv run pytest -q -m postgresql \
+            tests/integration/test_postgresql_control_plane.py \
+            tests/integration/test_postgresql_checkpoint_history.py \
+            tests/integration/test_work_runtime_permissions.py

@@ -46,11 +46,13 @@ class _Database:
 
 
 class _ContextConnection:
+    closed = False
+
     def __init__(self) -> None:
         self.params: tuple[Any, ...] | None = None
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
 
-    def execute(self, query: str, params: tuple[Any, ...]) -> _Rows:
+    def execute(self, query: str, params: tuple[Any, ...] = ()) -> _Rows:
         self.params = params
         self.calls.append((query, params))
         return _Rows()
@@ -175,6 +177,7 @@ def test_runtime_handoff_consumption_is_atomic_and_one_time() -> None:
     control = object.__new__(WorkControlPlane)
     control.runtime_id = "runtime-a"
     control._db = _HandoffDatabase()
+    control._secured = False
     control.expected_runtime_binding = RuntimeBinding(
         "org-a", "runtime-a", "role-a", "volume-a", "secret-a"
     )
@@ -201,6 +204,9 @@ def test_context_query_binds_runtime_resources_before_run_fields() -> None:
     control = object.__new__(WorkControlPlane)
     control.runtime_id = "runtime-a"
     control._db = database
+    control._executor_id = "executor-a"
+    control._executor = _ContextConnection()
+    control._secured = False
     control.expected_runtime_binding = RuntimeBinding(
         "org-a", "runtime-a", "role-a", "volume-a", "secret-a"
     )
@@ -237,6 +243,7 @@ def test_context_query_binds_runtime_resources_before_run_fields() -> None:
         "thread-a",
         3,
         2,
+        "executor-a",
         "running",
         "running",
         "running",
@@ -250,6 +257,9 @@ def test_create_run_persists_and_logs_the_forwarded_connection_id(
     control = object.__new__(WorkControlPlane)
     control.runtime_id = "runtime-a"
     control._db = database
+    control._executor_id = "executor-a"
+    control._executor = _ContextConnection()
+    control._secured = False
     now = datetime.now(UTC)
     context = ExecutionContext(
         work_user_id="work-user-a",
