@@ -2266,13 +2266,6 @@
     "unbindConfirm": "Remove the local binding for “{{name}}”? Historical data in Feishu will not be deleted.",
     "unbound": "Local binding removed; historical data retained"
   },
-  "retiredFeatures": {
-    "feishuMessage": "Feishu features are disabled; historical records are retained",
-    "feishuHistory": "Old connections and records are read-only. Reads, writes, authorization, tests, and sync are disabled. You can remove a local binding here.",
-    "localUnbind": "Unbind locally",
-    "unbindConfirm": "Remove the local binding for “{{name}}”? Historical data in Feishu will not be deleted.",
-    "unbound": "Local binding removed; historical data retained"
-  },
   "channels": {
     "title": "Channels",
     "description": "Manage and configure message channels",

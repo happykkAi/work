@@ -2265,13 +2265,6 @@
     "unbindConfirm": "确认解除“{{name}}”的本地绑定？不会删除飞书中的历史数据。",
     "unbound": "本地绑定已解除；历史数据保留"
   },
-  "retiredFeatures": {
-    "feishuMessage": "飞书相关功能已停用，历史记录保留",
-    "feishuHistory": "旧连接和历史记录仅供查看；读取、写入、授权、测试与同步均已关闭。可在此本地解除旧绑定。",
-    "localUnbind": "本地解绑",
-    "unbindConfirm": "确认解除“{{name}}”的本地绑定？不会删除飞书中的历史数据。",
-    "unbound": "本地绑定已解除；历史数据保留"
-  },
   "channels": {
     "title": "通道",
     "description": "管理和配置消息频道",
