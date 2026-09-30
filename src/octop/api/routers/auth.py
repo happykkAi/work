@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user, get_server, sign_token
+from octop.api.deps import current_user, extract_raw_token, get_server, revoke_token, sign_token
 from octop.infra.auth.captcha import current_env, ensure_captcha, load_effective, public_config
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import effective_permissions
@@ -126,8 +126,16 @@ async def login(
 
 
 @router.post("/logout", status_code=204, summary="Sign out")
-async def logout(user: Any = Depends(current_user), server: Any = Depends(get_server)) -> Response:
-    """Record an audit event for the current session. JWTs are stateless and not revoked server-side."""
+async def logout(
+    request: Request, user: Any = Depends(current_user), server: Any = Depends(get_server)
+) -> Response:
+    """Persistently revoke this session, including its sliding-renewed tokens."""
+    raw = extract_raw_token(
+        authorization=request.headers.get("authorization"),
+        access_token=request.query_params.get("access_token"),
+    )
+    assert raw is not None
+    revoke_token(server, raw)
     server.services.audit_repo.write(actor=user.username, action="auth.logout")
     return Response(status_code=204)
 

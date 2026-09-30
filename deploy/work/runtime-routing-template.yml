@@ -1,0 +1,190 @@
+# Fixed-instance Work entry acceptance template. All Work control URLs MUST use
+# one authoritative database with distinct provisioned entry/A/B roles. Octop
+# private databases stay separate. Migrate/provision before starting runtimes.
+# No credentials are embedded and no runtime ports are exposed.
+services:
+  work-control:
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: work_control
+      POSTGRES_PASSWORD_FILE: /run/secrets/work-control-owner-password
+    secrets: [work-control-owner-password]
+    volumes: ["work-control-data:/var/lib/postgresql/data"]
+    # One DB endpoint on each isolated institution network; no shared runtime net.
+    networks: [entry-org-a-private, entry-org-b-private]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d work_control"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: "no"
+  work-entry:
+    image: ${WORK_RUNTIME_IMAGE:?set a locally built image by digest}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - export OCTOP_DATABASE_URL="$(cat /run/secrets/entry-octop-database-url)"; export WORK_CONTROL_DATABASE_URL="$(cat /run/secrets/entry-work-control-database-url)"; exec octop run
+    environment:
+      OCTOP_HOME: /data/.octop
+      WORK_ENTRY_MODE: "1"
+      WORK_RUNTIME_ID: work-entry
+      WORK_RUNTIME_SECRETS_DIR: /run/secrets
+      WORK_RUNTIME_MTLS_CA_FILE: /run/secrets/work-runtime-ca
+      WORK_RUNTIME_MTLS_CERT_FILE: /run/secrets/entry-client-cert
+      WORK_RUNTIME_MTLS_KEY_FILE: /run/secrets/entry-client-key
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["work-entry-data:/data/.octop"]
+    networks: [entry-org-a-private, entry-org-b-private]
+    secrets:
+      - source: entry-octop-database-url
+        target: entry-octop-database-url
+      - source: entry-work-control-database-url
+        target: entry-work-control-database-url
+      - source: org-a-handoff
+        target: org-a-handoff
+      - source: org-b-handoff
+        target: org-b-handoff
+      - source: work-runtime-ca
+        target: work-runtime-ca
+      - source: entry-client-cert
+        target: entry-client-cert
+      - source: entry-client-key
+        target: entry-client-key
+    restart: "no"
+
+  octop-org-a:
+    image: ${WORK_RUNTIME_IMAGE:?set a locally built image by digest}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - export OCTOP_DATABASE_URL="$(cat /run/secrets/octop-database-url)"; export WORK_CONTROL_DATABASE_URL="$(cat /run/secrets/work-control-database-url)"; exec octop run
+    environment:
+      OCTOP_HOME: /data/.octop
+      WORK_RUNTIME_ID: org-a
+      WORK_ORGANIZATION_ID: org-a
+      WORK_VOLUME_ID: org-a-data
+      WORK_SECRET_REF: org-a-octop-database-url
+      WORK_RUNTIME_ENDPOINT: https://octop-org-a:8088
+      WORK_HANDOFF_SECRET_REF: org-a-handoff
+      WORK_RUNTIME_SECRETS_DIR: /run/secrets
+      WORK_RUNTIME_MTLS_CA_FILE: /run/secrets/work-runtime-ca
+      WORK_RUNTIME_MTLS_CERT_FILE: /run/secrets/org-a-server-cert
+      WORK_RUNTIME_MTLS_KEY_FILE: /run/secrets/org-a-server-key
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["org-a-data:/data/.octop"]
+    networks: [entry-org-a-private]
+    secrets:
+      - source: org-a-octop-database-url
+        target: octop-database-url
+      - source: org-a-work-control-database-url
+        target: work-control-database-url
+      - source: org-a-handoff
+        target: org-a-handoff
+      - source: work-runtime-ca
+        target: work-runtime-ca
+      - source: org-a-server-cert
+        target: org-a-server-cert
+      - source: org-a-server-key
+        target: org-a-server-key
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; socket.create_connection(('127.0.0.1', int(os.getenv('OCTOP_PORT', '8088'))), 2).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    restart: "no"
+
+  octop-org-b:
+    image: ${WORK_RUNTIME_IMAGE:?set a locally built image by digest}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - export OCTOP_DATABASE_URL="$(cat /run/secrets/octop-database-url)"; export WORK_CONTROL_DATABASE_URL="$(cat /run/secrets/work-control-database-url)"; exec octop run
+    environment:
+      OCTOP_HOME: /data/.octop
+      WORK_RUNTIME_ID: org-b
+      WORK_ORGANIZATION_ID: org-b
+      WORK_VOLUME_ID: org-b-data
+      WORK_SECRET_REF: org-b-octop-database-url
+      WORK_RUNTIME_ENDPOINT: https://octop-org-b:8088
+      WORK_HANDOFF_SECRET_REF: org-b-handoff
+      WORK_RUNTIME_SECRETS_DIR: /run/secrets
+      WORK_RUNTIME_MTLS_CA_FILE: /run/secrets/work-runtime-ca
+      WORK_RUNTIME_MTLS_CERT_FILE: /run/secrets/org-b-server-cert
+      WORK_RUNTIME_MTLS_KEY_FILE: /run/secrets/org-b-server-key
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes: ["org-b-data:/data/.octop"]
+    networks: [entry-org-b-private]
+    secrets:
+      - source: org-b-octop-database-url
+        target: octop-database-url
+      - source: org-b-work-control-database-url
+        target: work-control-database-url
+      - source: org-b-handoff
+        target: org-b-handoff
+      - source: work-runtime-ca
+        target: work-runtime-ca
+      - source: org-b-server-cert
+        target: org-b-server-cert
+      - source: org-b-server-key
+        target: org-b-server-key
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,socket; socket.create_connection(('127.0.0.1', int(os.getenv('OCTOP_PORT', '8088'))), 2).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    restart: "no"
+
+networks:
+  entry-org-a-private:
+    internal: true
+  entry-org-b-private:
+    internal: true
+
+volumes:
+  work-control-data:
+  work-entry-data:
+  org-a-data:
+  org-b-data:
+
+secrets:
+  work-control-owner-password:
+    file: ${WORK_CONTROL_OWNER_PASSWORD_FILE:?point to the migration-owner password file, never mount in runtime}
+  entry-octop-database-url:
+    file: ${WORK_ENTRY_OCTOP_DATABASE_URL_FILE:?point to the entry Octop database URL file}
+  entry-work-control-database-url:
+    file: ${WORK_ENTRY_CONTROL_DATABASE_URL_FILE:?point to the entry Work control role URL file}
+  org-a-octop-database-url:
+    file: ${WORK_ORG_A_OCTOP_DATABASE_URL_FILE:?point to the org-a Octop database URL file}
+  org-a-work-control-database-url:
+    file: ${WORK_ORG_A_WORK_CONTROL_DATABASE_URL_FILE:?point to the org-a Work control role URL file}
+  org-b-octop-database-url:
+    file: ${WORK_ORG_B_OCTOP_DATABASE_URL_FILE:?point to the org-b Octop database URL file}
+  org-b-work-control-database-url:
+    file: ${WORK_ORG_B_WORK_CONTROL_DATABASE_URL_FILE:?point to the org-b Work control role URL file}
+  org-a-handoff:
+    file: ${WORK_ORG_A_HANDOFF_SECRET_FILE:?point to a 32-byte org-a handoff secret file}
+  org-b-handoff:
+    file: ${WORK_ORG_B_HANDOFF_SECRET_FILE:?point to a 32-byte org-b handoff secret file}
+  work-runtime-ca:
+    file: ${WORK_RUNTIME_MTLS_CA_FILE:?point to the Work runtime CA certificate}
+  entry-client-cert:
+    file: ${WORK_ENTRY_MTLS_CERT_FILE:?point to the entry client certificate}
+  entry-client-key:
+    file: ${WORK_ENTRY_MTLS_KEY_FILE:?point to the entry client private key}
+  org-a-server-cert:
+    file: ${WORK_ORG_A_MTLS_CERT_FILE:?point to the org-a server certificate}
+  org-a-server-key:
+    file: ${WORK_ORG_A_MTLS_KEY_FILE:?point to the org-a server private key}
+  org-b-server-cert:
+    file: ${WORK_ORG_B_MTLS_CERT_FILE:?point to the org-b server certificate}
+  org-b-server-key:
+    file: ${WORK_ORG_B_MTLS_KEY_FILE:?point to the org-b server private key}

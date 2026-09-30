@@ -12,15 +12,18 @@ name: Anti-spam issue guard
 
 permissions:
   contents: read
-  issues: write
+  issues: read
 
 jobs:
   anti-spam:
+    if: github.repository == 'TencentCloud/Octop'
+    permissions:
+      issues: write
     runs-on: ubuntu-latest
 
     steps:
       - name: Close suspicious issues
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         env:
           LABEL_NAME: "pending-maintainer-review"
           LABEL_COLOR: "cfd3d7"

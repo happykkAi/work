@@ -33,9 +33,10 @@ class ASGIWebSocketSession:
     uvicorn in production.
     """
 
-    def __init__(self, app: Any, path: str) -> None:
+    def __init__(self, app: Any, path: str, subprotocols: list[str] | None = None) -> None:
         self._app = app
         self._path = path
+        self._subprotocols = subprotocols or []
         self._from_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._to_app: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._task: asyncio.Task[None] | None = None
@@ -51,10 +52,17 @@ class ASGIWebSocketSession:
             "raw_path": url.path.encode("ascii"),
             "query_string": url.query.encode("ascii"),
             "root_path": "",
-            "headers": [(b"host", b"testserver")],
+            "headers": [
+                (b"host", b"testserver"),
+            ]
+            + (
+                [(b"sec-websocket-protocol", ", ".join(self._subprotocols).encode())]
+                if self._subprotocols
+                else []
+            ),
             "client": ("testclient", 50000),
             "server": ("testserver", 80),
-            "subprotocols": [],
+            "subprotocols": self._subprotocols,
             "state": {},
             "app": self._app,
         }
@@ -129,9 +137,11 @@ class ASGIWebSocketSession:
 
 
 @asynccontextmanager
-async def ws_connect(app: Any, path: str) -> AsyncIterator[ASGIWebSocketSession]:
+async def ws_connect(
+    app: Any, path: str, *, subprotocols: list[str] | None = None
+) -> AsyncIterator[ASGIWebSocketSession]:
     """Open an in-process websocket session against *app* on the current loop."""
-    session = ASGIWebSocketSession(app, path)
+    session = ASGIWebSocketSession(app, path, subprotocols)
     try:
         await session.connect()
         yield session

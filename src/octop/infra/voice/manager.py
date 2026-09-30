@@ -11,6 +11,7 @@ from octop.infra.db.repos.voice_providers import VoiceProviderRepo, VoiceProvide
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.voice import adapters
 from octop.infra.voice.presets import is_builtin_preset
+from octop.infra.work.optional_models import assert_optional_model_allowed
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,8 @@ class VoiceManager:
             )
 
     def resolve(self, name: str) -> ResolvedVoiceProvider:
+        if name != "browser":
+            assert_optional_model_allowed()
         if is_builtin_preset(name):
             return ResolvedVoiceProvider(name=name, kind=name, row=self._repo.get_by_name(name))
         row = self._repo.get_by_name(name)
@@ -185,6 +188,7 @@ class VoiceManager:
     async def test_provider(
         self, provider_id: int, *, mode: str, locale: str = "en"
     ) -> dict[str, Any]:
+        assert_optional_model_allowed()
         row = self._repo.get(provider_id)
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, "voice provider not found")
@@ -204,6 +208,7 @@ class VoiceManager:
         mode: str,
         locale: str = "en",
     ) -> dict[str, Any]:
+        assert_optional_model_allowed()
         row = VoiceProviderRow(
             id=0,
             name=name,

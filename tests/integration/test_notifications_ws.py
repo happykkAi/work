@@ -11,7 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from tests.support.app import octop_client
 from tests.support.auth import auth_header, bootstrap_admin, ensure_users
-from tests.support.http import ws_connect, ws_token
+from tests.support.http import ASGIWebSocketSession, ws_connect, ws_token
 
 
 @pytest.fixture
@@ -33,6 +33,28 @@ async def test_notifications_ws_ping_pong(env: Any) -> None:
     async with _notifications_ws(c, alice_auth) as ws:
         await ws.send_json({"type": "ping"})
         assert await ws.receive_json() == {"type": "pong"}
+
+
+async def test_notifications_ws_accepts_token_subprotocol_without_query(env: Any) -> None:
+    c, _srv, alice_auth, _bob_auth = env
+    token = ws_token(alice_auth)
+
+    class ProtocolSession(ASGIWebSocketSession):
+        def _scope(self) -> dict[str, Any]:
+            scope = super()._scope()
+            scope["headers"].append(
+                (b"sec-websocket-protocol", f"octop.chat, octop.auth.{token}".encode())
+            )
+            scope["subprotocols"] = ["octop.chat", f"octop.auth.{token}"]
+            return scope
+
+    ws = ProtocolSession(c._octop_app, "/api/notifications/ws")
+    try:
+        await ws.connect()
+        await ws.send_json({"type": "ping"})
+        assert await ws.receive_json() == {"type": "pong"}
+    finally:
+        await ws.close()
 
 
 async def test_notifications_ws_missing_token_rejected(env: Any) -> None:

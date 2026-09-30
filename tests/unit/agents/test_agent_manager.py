@@ -1299,9 +1299,6 @@ def test_build_harness_config_ignores_stale_aux_model(manager: AgentManager) -> 
     assert cfg.memory_aux_heavy_model is None
 
 
-@pytest.mark.skip(
-    reason="HarnessAgentConfig monkeypatch incompatible with SecurityPolicy.apply_to_config"
-)
 def test_build_harness_config_passes_default_model_without_embedded_providers(
     manager: AgentManager,
     monkeypatch: pytest.MonkeyPatch,
@@ -1309,13 +1306,23 @@ def test_build_harness_config_passes_default_model_without_embedded_providers(
     """default_model is forwarded; providers stay on HarnessAgentManager, not per-agent config."""
     from octop.infra.agents import manager as mgr_mod
 
+    manager._repos.provider_repo.create(
+        name="openai-live",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps(
+            [{"id": "MiniMax-M2.7", "name": "MiniMax-M2.7", "enabled": True}],
+        ),
+    )
     captured: list[dict] = []
+    real_config = mgr_mod.HarnessAgentConfig
 
-    class _FakeCfg:
-        def __init__(self, **kwargs: object) -> None:
-            captured.append(kwargs)
+    def capture_config(**kwargs: object):
+        captured.append(kwargs)
+        return real_config(**kwargs)
 
-    monkeypatch.setattr(mgr_mod, "HarnessAgentConfig", _FakeCfg)
+    monkeypatch.setattr(mgr_mod, "HarnessAgentConfig", capture_config)
     manager._build_harness_config(_row(default_model="openai-live/MiniMax-M2.7"))
     assert captured[0]["default_model"] == "openai-live/MiniMax-M2.7"
     assert "providers" not in captured[0]

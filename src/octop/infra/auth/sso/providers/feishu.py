@@ -11,6 +11,7 @@ import jwt
 from octop.infra.auth.sso.crypto import decrypt_secret
 from octop.infra.auth.sso.public_base import oauth_callback_path
 from octop.infra.db.repos.sso import SsoLoginStateRow, SsoProviderRow
+from octop.infra.retired_integrations import ensure_integration_available, is_retired_integration
 
 if TYPE_CHECKING:
     from octop.infra.auth.sso.service import SsoService
@@ -58,7 +59,9 @@ class FeishuAdapter:
         self._service = service
 
     def is_configured(self, row: SsoProviderRow) -> bool:
-        return bool(row.client_id.strip() and row.client_secret_enc is not None)
+        return not is_retired_integration(self.kind) and bool(
+            row.client_id.strip() and row.client_secret_enc is not None
+        )
 
     def authorize_url(
         self,
@@ -69,6 +72,7 @@ class FeishuAdapter:
         code_challenge: str,
         redirect_uri: str,
     ) -> str:
+        ensure_integration_available(self.kind)
         del nonce  # Feishu authorize does not use OIDC nonce.
         region = feishu_region(row)
         params: dict[str, str] = {
@@ -92,6 +96,7 @@ class FeishuAdapter:
         login_state: SsoLoginStateRow,
         redirect_uri: str,
     ) -> tuple[str, dict[str, Any]]:
+        ensure_integration_available(self.kind)
         if row.client_secret_enc is None:
             raise ValueError("Feishu app secret is not configured")
         secret = decrypt_secret(self._service._services.secret_repo, row.client_secret_enc)
@@ -131,6 +136,7 @@ class FeishuAdapter:
         return subject, self.to_claims(identity)
 
     def test_connection(self, row: SsoProviderRow) -> dict[str, bool | str]:
+        ensure_integration_available(self.kind)
         if row.client_secret_enc is None:
             return {"ok": False, "detail": "Feishu app secret is not configured"}
         secret = decrypt_secret(self._service._services.secret_repo, row.client_secret_enc)

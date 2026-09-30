@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,6 +34,8 @@ def sign_token(
     uname: str,
     role: str,
     ttl_seconds: int = 86400,
+    work_connection_id: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     now = int(time.time())
     payload = {
@@ -40,13 +44,18 @@ def sign_token(
         "role": role,
         "iat": now,
         "exp": now + ttl_seconds,
+        "jti": session_id or uuid.uuid4().hex,
     }
+    if work_connection_id is not None:
+        payload["work_connection_id"] = work_connection_id
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
-def decode_token(secret: bytes, token: str) -> dict[str, Any]:
+def decode_token(secret: bytes, token: str, *, allow_expired: bool = False) -> dict[str, Any]:
     try:
-        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        payload = jwt.decode(
+            token, secret, algorithms=["HS256"], options={"verify_exp": not allow_expired}
+        )
         if "sub" in payload:
             payload["sub"] = int(payload["sub"])
         return payload
@@ -84,6 +93,7 @@ _JWT_EXEMPT_EXACT = (
     "/api/auth/oauth/exchange",
     "/api/auth/invite/validate",
     "/api/auth/invite/redeem",
+    "/api/internal/work/handoff",
     "/api/docs",
     "/api/openapi.json",
 )
@@ -126,21 +136,60 @@ def extract_raw_token(
     return None
 
 
-def _decode(server: OctopServer, token: str) -> dict[str, Any]:
+def extract_websocket_auth(
+    *,
+    query_token: str | None,
+    authorization: str | None,
+    protocol_header: str | None,
+    forwarded: bool,
+) -> tuple[str | None, str | None]:
+    if forwarded:
+        return extract_raw_token(authorization=authorization), None
+    protocols = [item.strip() for item in (protocol_header or "").split(",")]
+    protocol_token = next(
+        (item.removeprefix("octop.auth.") for item in protocols if item.startswith("octop.auth.")),
+        None,
+    )
+    selected = "octop.chat" if "octop.chat" in protocols else None
+    return protocol_token or query_token, selected
+
+
+def _decode(server: OctopServer, token: str, *, allow_expired: bool = False) -> dict[str, Any]:
     assert server.services is not None
     secret = server.services.secret_repo.get("jwt")
     if secret is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "jwt secret missing")
     try:
-        return decode_token(secret, token)
+        payload = decode_token(secret, token, allow_expired=allow_expired)
+        session = str(payload.get("jti") or hashlib.sha256(token.encode()).hexdigest())
+        if server.services.settings_repo.get("auth.revoked." + session) is not None:
+            raise InvalidToken("session revoked")
+        return payload
     except TokenExpired as exc:
         raise OctopError(ErrorCode.TOKEN_EXPIRED, "token expired") from exc
     except InvalidToken as exc:
         raise OctopError(ErrorCode.AUTH_FAILED, "invalid token") from exc
 
 
-def resolve_user_from_token(server: OctopServer, token: str) -> User:
+def revoke_token(server: OctopServer, token: str) -> None:
     payload = _decode(server, token)
+    session = str(payload.get("jti") or hashlib.sha256(token.encode()).hexdigest())
+    assert server.services is not None
+    now = int(time.time())
+    expires_at = max(int(payload["exp"]), now + server.services.config.access_token_ttl_seconds)
+    server.services.settings_repo.revoke_session(session, expires_at, now)
+
+
+def resolve_user_from_token(
+    server: OctopServer,
+    token: str,
+    *,
+    work_connection_id: str | None = None,
+    allow_expired: bool = False,
+) -> User:
+    payload = _decode(server, token, allow_expired=allow_expired)
+    if payload.get("work_connection_id") != work_connection_id:
+        raise OctopError(ErrorCode.AUTH_FAILED, "Work connection token mismatch")
     assert server.user_manager is not None
     user = server.user_manager.get_by_id(int(payload["sub"]))
     if user is None:
@@ -156,6 +205,8 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
     """
     assert server.services is not None
     payload = _decode(server, token)
+    if payload.get("work_connection_id") is not None:
+        return None
     ttl = int(server.services.config.access_token_ttl_seconds)
     remaining = int(payload["exp"]) - int(time.time())
     threshold = max(1, int(ttl * _SLIDING_RENEW_REMAINING_FRACTION))
@@ -170,6 +221,7 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
         uname=user.username,
         role=user.role,
         ttl_seconds=ttl,
+        session_id=str(payload.get("jti") or hashlib.sha256(token.encode()).hexdigest()),
     )
 
 

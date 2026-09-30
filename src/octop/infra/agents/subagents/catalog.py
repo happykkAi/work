@@ -30,6 +30,7 @@ FALLBACK_LOCALE: Locale = "en"
 # they don't collide on the same ``TODO_TRANSLATE`` slug. Translators
 # replace the name with the real Chinese agent name once they finish.
 TRANSLATION_PLACEHOLDER_NAME: str = "TODO_TRANSLATE"
+_RETIRED_SUBAGENTS = frozenset({"engineering-feishu-integration-developer"})
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,8 @@ class SubagentCatalog:
             if not div_dir.is_dir():
                 continue
             for fpath in sorted(div_dir.glob("*.md")):
+                if fpath.stem in _RETIRED_SUBAGENTS:
+                    continue
                 defn = self._parse_agent_file(div_id, fpath, FALLBACK_LOCALE)
                 if defn is None:
                     continue
@@ -328,6 +331,8 @@ class SubagentCatalog:
             if not div_dir.is_dir():
                 continue
             for fpath in sorted(div_dir.glob("*.md")):
+                if fpath.stem in _RETIRED_SUBAGENTS:
+                    continue
                 defn = self._parse_agent_file(div_id, fpath, locale)
                 if defn is None:
                     continue

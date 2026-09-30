@@ -16,7 +16,7 @@
 # ---------------------------------------------------------------------------
 # 阶段 1 — 前端构建（React / TypeScript → src/octop/dashboard）
 # ---------------------------------------------------------------------------
-FROM node:20-slim AS frontend-builder
+FROM node:24.21.0-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS frontend-builder
 
 ARG NODE_MAX_OLD_SPACE_SIZE=2048
 ARG NPM_REGISTRY=
@@ -35,7 +35,7 @@ RUN NODE_ENV=production NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_
 # ---------------------------------------------------------------------------
 # 阶段 2 — Python 运行时 + 预构建前端 + 全部附加组件
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36 AS runtime
 
 LABEL maintainer="TencentCloud OrcaKit"
 LABEL org.opencontainers.image.title="Octop"
@@ -70,13 +70,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /bin/
+RUN python3 -m pip install --no-cache-dir --disable-pip-version-check uv==0.12.19
 
 WORKDIR /app
 
 # 仅改源码时可复用此层缓存（用 uv pip 安装，避免 uv.lock 冻结冲突）
 COPY pyproject.toml README.md LICENSE ./
 COPY src/ ./src/
+COPY packages/work_platform/pyproject.toml ./packages/work_platform/pyproject.toml
+COPY packages/work_platform/src/ ./packages/work_platform/src/
 COPY --from=frontend-builder /build/src/octop/dashboard/ ./src/octop/dashboard/
 
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -91,6 +93,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
        UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple \
        UV_INSECURE_HOST=mirrors.aliyun.com \
        uv pip install --python /app/.venv ".[desktop]" \
+    && uv pip install --no-deps --python /app/.venv packages/work_platform \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* /tmp/*

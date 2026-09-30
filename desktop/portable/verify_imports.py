@@ -23,6 +23,9 @@ _REQ_RE = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\s*==\s*(?P<ver>[
 # Import names that have historically drifted across lock/install environments.
 _SMOKE_IMPORTS = (
     "octop",
+    "work_platform",
+    "octop.infra.server",
+    "octop.launch",
     "fastapi",
     "cryptography.fernet",
     "langchain_core",
@@ -117,7 +120,7 @@ def main() -> int:
         except Exception as exc:
             errors.append(f"import {mod}: {type(exc).__name__}: {exc}")
 
-    # Sanity: launch.py must stay importable as a file (no compile errors).
+    # Sanity: the verifier itself must stay parseable.
     try:
         ast.parse(Path(__file__).read_text(encoding="utf-8"))
     except SyntaxError as exc:

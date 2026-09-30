@@ -1,12 +1,9 @@
-"""Tests for the Feishu dashboard SSO adapter."""
+"""Retired Feishu SSO paths stay closed while legacy config remains queryable."""
 
 from __future__ import annotations
 
-import json
 from unittest.mock import patch
 
-import httpx
-import jwt
 import pytest
 
 from octop.config import OctopConfig
@@ -16,6 +13,7 @@ from octop.infra.auth.sso.service import SsoService
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.services import build_shared_services
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.manager import UserManager
 from octop.infra.utils.paths import PathLayout
 
@@ -30,198 +28,90 @@ def service(tmp_path):
     return SsoService(services, UserManager(services))
 
 
-def _feishu_row(service: SsoService, *, region: str = "feishu"):
-    secret = encrypt_secret(service._services.secret_repo, "app-secret")
+def _feishu_row(service: SsoService):
+    secret = encrypt_secret(service._services.secret_repo, "synthetic-secret")
     return service._services.sso_repo.upsert_by_kind(
         "feishu",
         enabled=True,
         display_name="Feishu",
         issuer="",
-        client_id="cli_xxx",
+        client_id="synthetic-app",
         client_secret_enc=secret,
         scopes="",
         dashboard_origin=None,
-        extra={"region": region},
+        extra={"region": "feishu"},
     )
 
 
-def test_feishu_authorize_url_omits_scope_and_uses_region_hosts(service: SsoService) -> None:
-    adapter = FeishuAdapter(service)
-    row = _feishu_row(service, region="lark")
-    url = adapter.authorize_url(
-        row=row,
-        state="st",
-        nonce="ignored",
-        code_challenge="challenge",
-        redirect_uri="https://octop.example/api/auth/oauth/callback",
-    )
-    assert "accounts.larksuite.com" in url
-    query = httpx.QueryParams(url.split("?", 1)[1])
-    assert query["client_id"] == "cli_xxx"
-    assert query["response_type"] == "code"
-    assert query["code_challenge_method"] == "S256"
-    assert "scope" not in query
-
-
-def test_feishu_is_configured_without_issuer(service: SsoService) -> None:
-    adapter = FeishuAdapter(service)
-    row = _feishu_row(service)
-    assert adapter.is_configured(row)
+def test_legacy_feishu_sso_is_reported_retired_without_exposing_credentials(
+    service: SsoService,
+) -> None:
+    _feishu_row(service)
     with patch.object(service._user_manager, "count", return_value=1):
         status = service.providers_status()
+
     feishu = next(item for item in status["providers"] if item["kind"] == "feishu")
-    assert feishu["enabled"] is True
+    assert feishu["enabled"] is False
+    assert feishu["retired"] is True
+    assert feishu["status_message"] == "飞书相关功能已停用，历史记录保留"
+
+    config = service.get_config_for_kind("feishu", public_base="https://work.example")
+    assert config["enabled"] is False
+    assert config["retired"] is True
+    assert config["status_message"] == "飞书相关功能已停用，历史记录保留"
+    assert config["client_id"] == ""
+    assert config["has_client_secret"] is False
 
 
-def test_feishu_complete_login_reads_v2_token_without_data_wrapper(
+def test_feishu_sso_cannot_be_reconfigured_or_started(service: SsoService) -> None:
+    with pytest.raises(OctopError) as save_error:
+        service.put_config_for_kind("feishu", {"enabled": True, "client_id": "new"})
+    with pytest.raises(OctopError) as login_error:
+        service.start_login_for_kind(
+            "feishu", redirect_after=None, public_base="https://work.example"
+        )
+
+    assert save_error.value.code is ErrorCode.FEATURE_DISABLED
+    assert login_error.value.code is ErrorCode.FEATURE_DISABLED
+
+
+@pytest.mark.parametrize("operation", ["authorize", "complete", "test_connection"])
+def test_adapter_methods_block_before_token_or_business_request(
     service: SsoService,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
 ) -> None:
-    """authen/v2/oauth/token returns access_token at the top level, not in data."""
-    adapter = FeishuAdapter(service)
     row = _feishu_row(service)
+    adapter = FeishuAdapter(service)
+    requests: list[str] = []
+    monkeypatch.setattr(
+        service,
+        "_http_client",
+        lambda: requests.append("http") or pytest.fail("retired Feishu path opened HTTP"),
+    )
+    monkeypatch.setattr(
+        "octop.infra.auth.sso.providers.feishu.decrypt_secret",
+        lambda *_args: requests.append("secret") or pytest.fail("retired Feishu path read secret"),
+    )
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/oauth/token"):
-            return httpx.Response(
-                200,
-                json={
-                    "code": 0,
-                    "access_token": "user-token",
-                    "expires_in": 7200,
-                    "token_type": "Bearer",
-                },
+    with pytest.raises(OctopError) as exc:
+        if operation == "authorize":
+            adapter.authorize_url(
+                row=row,
+                state="synthetic-state",
+                nonce="synthetic-nonce",
+                code_challenge="synthetic-challenge",
+                redirect_uri="https://work.example/callback",
             )
-        return httpx.Response(
-            200,
-            json={"code": 0, "msg": "ok", "data": {"union_id": "on_union", "name": "Ada"}},
-        )
-
-    login_state = type("State", (), {"code_verifier": "pkce"})()
-    real_client = httpx.Client
-
-    def factory(*args: object, **kwargs: object) -> httpx.Client:
-        kwargs.pop("transport", None)
-        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    with patch("octop.infra.auth.sso.service.httpx.Client", side_effect=factory):
-        subject, claims = adapter.complete_login(
-            "auth-code",
-            row=row,
-            login_state=login_state,  # type: ignore[arg-type]
-            redirect_uri="https://octop.example/api/auth/oauth/callback",
-        )
-
-    assert subject == "on_union"
-    assert claims["name"] == "Ada"
-
-
-def test_feishu_complete_login_unwraps_envelope_and_falls_back_to_open_id(
-    service: SsoService,
-) -> None:
-    adapter = FeishuAdapter(service)
-    row = _feishu_row(service)
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path.endswith("/oauth/token"):
-            body = json.loads(request.content)
-            assert body["grant_type"] == "authorization_code"
-            assert body["code_verifier"] == "pkce"
-            assert request.headers["content-type"].startswith("application/json")
-            return httpx.Response(
-                200,
-                json={"code": 0, "msg": "ok", "data": {"access_token": "user-token"}},
+        elif operation == "complete":
+            adapter.complete_login(
+                "synthetic-code",
+                row=row,
+                login_state=None,  # type: ignore[arg-type]
+                redirect_uri="https://work.example/callback",
             )
-        assert request.url.path.endswith("/user_info")
-        assert request.headers["authorization"] == "Bearer user-token"
-        return httpx.Response(
-            200,
-            json={
-                "code": 0,
-                "msg": "ok",
-                "data": {
-                    "open_id": "ou_open",
-                    "name": "Ada",
-                    "enterprise_email": "ada@example.com",
-                },
-            },
-        )
+        else:
+            adapter.test_connection(row)
 
-    login_state = type(
-        "State",
-        (),
-        {"code_verifier": "pkce", "nonce": "n", "provider_id": row.id},
-    )()
-    real_client = httpx.Client
-
-    def factory(*args: object, **kwargs: object) -> httpx.Client:
-        kwargs.pop("transport", None)
-        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    with patch("octop.infra.auth.sso.service.httpx.Client", side_effect=factory):
-        subject, claims = adapter.complete_login(
-            "auth-code",
-            row=row,
-            login_state=login_state,  # type: ignore[arg-type]
-            redirect_uri="https://octop.example/api/auth/oauth/callback",
-        )
-
-    assert subject == "ou_open"
-    assert claims["name"] == "Ada"
-    assert claims["email"] == "ada@example.com"
-    assert requests[0].method == "POST"
-
-
-def test_feishu_token_envelope_error_is_value_error(service: SsoService) -> None:
-    adapter = FeishuAdapter(service)
-    row = _feishu_row(service)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"code": 20027, "msg": "invalid scope", "data": {}})
-
-    real_client = httpx.Client
-
-    def factory(*args: object, **kwargs: object) -> httpx.Client:
-        kwargs.pop("transport", None)
-        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    login_state = type("State", (), {"code_verifier": "pkce"})()
-    with (
-        patch("octop.infra.auth.sso.service.httpx.Client", side_effect=factory),
-        pytest.raises(ValueError, match="invalid scope"),
-    ):
-        adapter.complete_login(
-            "auth-code",
-            row=row,
-            login_state=login_state,  # type: ignore[arg-type]
-            redirect_uri="https://octop.example/api/auth/oauth/callback",
-        )
-
-
-def test_feishu_missing_subject_is_invalid_token(service: SsoService) -> None:
-    adapter = FeishuAdapter(service)
-    row = _feishu_row(service)
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path.endswith("/oauth/token"):
-            return httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"access_token": "t"}})
-        return httpx.Response(200, json={"code": 0, "msg": "ok", "data": {"name": "Ada"}})
-
-    real_client = httpx.Client
-
-    def factory(*args: object, **kwargs: object) -> httpx.Client:
-        kwargs.pop("transport", None)
-        return real_client(*args, transport=httpx.MockTransport(handler), **kwargs)
-
-    login_state = type("State", (), {"code_verifier": "pkce"})()
-    with (
-        patch("octop.infra.auth.sso.service.httpx.Client", side_effect=factory),
-        pytest.raises(jwt.InvalidTokenError),
-    ):
-        adapter.complete_login(
-            "auth-code",
-            row=row,
-            login_state=login_state,  # type: ignore[arg-type]
-            redirect_uri="https://octop.example/api/auth/oauth/callback",
-        )
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+    assert requests == []

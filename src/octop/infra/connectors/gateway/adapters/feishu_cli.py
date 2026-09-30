@@ -9,6 +9,7 @@ from typing import Any
 from octop.infra.connectors.gateway.cli_dirs import resolve_cli_config_key
 from octop.infra.connectors.gateway.cli_runner import resolve_binary, run_cli
 from octop.infra.connectors.gateway.feishu_creds import prepare_feishu_cli_env
+from octop.infra.retired_integrations import ensure_integration_available
 from octop.infra.utils.paths import PathLayout
 
 _KIND = "feishu-cli"
@@ -111,10 +112,11 @@ TOOLS: list[dict[str, Any]] = [
 
 
 def list_tools() -> list[dict[str, Any]]:
-    return TOOLS
+    return []
 
 
 def call_tool(creds: dict[str, Any], name: str, args: dict[str, Any]) -> str:
+    ensure_integration_available(_KIND)
     binary = resolve_binary("lark-cli")
     try:
         if name == "help":
@@ -233,6 +235,7 @@ def _prepare_env(
     *,
     prefer_identity: str | None = None,
 ) -> dict[str, str]:
+    ensure_integration_available(_KIND)
     app_id = str(creds.get("app_id") or creds.get("client_id") or "").strip()
     app_secret = str(creds.get("app_secret") or creds.get("api_key") or "").strip()
     instance_key = resolve_cli_config_key(creds)
@@ -250,6 +253,7 @@ def _prepare_env(
 
 
 def probe_credentials(creds: dict[str, Any]) -> None:
+    ensure_integration_available(_KIND)
     binary = resolve_binary("lark-cli")
     env = _prepare_env(creds)
     out = run_cli([binary, "auth", "status", "--json"], env=env, timeout_s=60.0)

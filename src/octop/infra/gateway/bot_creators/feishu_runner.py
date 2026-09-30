@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from octop.infra.retired_integrations import ensure_integration_available
 from octop.infra.utils.subprocess_io import parse_subprocess_json_lines
 
 ALLOWED_PLATFORMS = frozenset({"feishu", "lark"})
@@ -30,6 +31,7 @@ def start_feishu_creator(
     avatar_url: str | None = None,
     greeting: str | None = None,
 ) -> subprocess.Popen[bytes]:
+    ensure_integration_available("feishu")
     if platform not in ALLOWED_PLATFORMS:
         raise ValueError(f"platform must be one of {sorted(ALLOWED_PLATFORMS)}")
     script_path = bot_creator_script("feishu_bot_creator.py")

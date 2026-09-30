@@ -8,6 +8,7 @@ from pathlib import Path
 
 from octop.infra.connectors.gateway.cli_fingerprint import credential_fingerprint
 from octop.infra.connectors.gateway.cli_runner import resolve_binary, run_cli
+from octop.infra.retired_integrations import ensure_integration_available
 
 _FINGERPRINT_NAME = ".octop_feishu_fingerprint"
 _BRAND = "feishu"
@@ -21,6 +22,7 @@ def prepare_feishu_cli_env(
     default_as: str = "bot",
 ) -> tuple[str, dict[str, str]]:
     """Resolve binary, scrub external app env, set CONFIG_DIR, ensure config."""
+    ensure_integration_available("feishu-cli")
     app_id = str(app_id or "").strip()
     app_secret = str(app_secret or "").strip()
     if not app_id or not app_secret:
@@ -59,6 +61,7 @@ def ensure_feishu_cli_config(
 
     ``default_as`` is ``bot`` or ``user`` (persisted preference after device login).
     """
+    ensure_integration_available("feishu-cli")
     config_dir.mkdir(parents=True, exist_ok=True)
     identity = _normalize_default_as(default_as)
     fingerprint = credential_fingerprint(app_id, app_secret)
@@ -100,5 +103,6 @@ def _normalize_default_as(value: str) -> str:
 
 def _ensure_default_as(binary: str, env: dict[str, str], identity: str) -> None:
     # Older CLI / already set — non-fatal if auth status still works.
+    ensure_integration_available("feishu-cli")
     with suppress(ValueError):
         run_cli([binary, "config", "default-as", identity], env=env, timeout_s=30.0)

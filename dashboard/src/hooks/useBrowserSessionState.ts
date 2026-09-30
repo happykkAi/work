@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import api from "../api";
 import { getWsUrl } from "../api/config";
-import { getAuthToken } from "../api/request";
+import { createAuthenticatedWebSocket } from "../api/modules/wsAuth";
 import type { BrowserSession, DisplayEnvironment } from "../api/types/browser";
 import { resolveBrowserProfile } from "../utils/browserProfile";
 import { useCurrentUser } from "./useCurrentUser";
@@ -120,18 +120,16 @@ export function useBrowserSessionState(
       wsRef.current = null;
     }
 
-    const token = getAuthToken();
     const params = new URLSearchParams({
       width: "1",
       height: "1",
       listen_only: "1",
     });
-    if (token) params.set("token", token);
     const wsUrl = `${getWsUrl("/browser-stream/ws")}?${params.toString()}`;
 
     let ws: WebSocket;
     try {
-      ws = new WebSocket(wsUrl);
+      ws = createAuthenticatedWebSocket(wsUrl);
     } catch {
       // Schedule reconnect
       scheduleReconnect();

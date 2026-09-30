@@ -86,6 +86,7 @@
     "BACKUP_SCHEMA_INCOMPATIBLE": "该备份使用数据库结构版本 {{archive_schema_version}}，当前 Octop 版本无法恢复（最高支持版本：{{runtime_schema_version}}）。",
     "BACKUP_IN_PROGRESS": "已有备份或恢复任务正在进行，请稍后再试。",
     "FORBIDDEN": "没有权限。",
+    "FEATURE_DISABLED": "飞书相关功能已停用，历史记录保留",
     "NOT_FOUND": "未找到。",
     "USER_DISABLED": "账号已禁用。",
     "LOGIN_LOCKED": "登录失败次数过多，请 {{minutes}} 分钟后再试。",
@@ -1759,6 +1760,7 @@
     "mediaLoadFailed": "无法加载预览",
     "retryPreview": "重试",
     "docPreviewUnsupported": "暂不支持在线预览此文档，请下载后查看",
+    "excelPreviewDisabled": "出于文件安全审查，Excel 在线预览暂时停用。请下载原文件后查看。",
     "excelPreviewTruncated": "预览仅显示前 {{rows}} 行、{{cols}} 列，完整内容请下载",
     "excelDownloadFull": "下载完整文件",
     "pdfPageCount": "共 {{count}} 页",
@@ -2255,6 +2257,13 @@
       "runtimeMisfireGrace": "错过容忍 (秒)"
     },
     "noAgentSelected": "请先在右上角选择一个专家来管理它的定时任务"
+  },
+  "retiredFeatures": {
+    "feishuMessage": "飞书相关功能已停用，历史记录保留",
+    "feishuHistory": "旧连接和历史记录仅供查看；读取、写入、授权、测试与同步均已关闭。可在此本地解除旧绑定。",
+    "localUnbind": "本地解绑",
+    "unbindConfirm": "确认解除“{{name}}”的本地绑定？不会删除飞书中的历史数据。",
+    "unbound": "本地绑定已解除；历史数据保留"
   },
   "channels": {
     "title": "通道",

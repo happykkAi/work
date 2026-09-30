@@ -9,6 +9,9 @@ from typing import TYPE_CHECKING
 from octop.infra.cron.delivery import CronDeliveryCommand
 from octop.infra.cron.task_type import normalize_cron_task_type
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
+from octop.infra.errors import OctopError
+from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.retired_integrations import ensure_integration_available, is_retired_integration
 
 if TYPE_CHECKING:
     from octop.infra.cron.delivery import CronDeliveryService
@@ -76,6 +79,12 @@ class CronJob:
         )
 
     async def run(self, *, raise_on_error: bool = False) -> None:
+        blocked = self.block_retired_target()
+        if blocked is not None:
+            if raise_on_error:
+                raise blocked
+            return
+
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("cron_runs_total")
@@ -116,3 +125,30 @@ class CronJob:
             action="cron.run_ok",
             target=self._cron_id,
         )
+
+    def block_retired_target(self) -> OctopError | None:
+        channel_type = ThreadRegistry.channel_type_from_key(self._session_key)
+        if not is_retired_integration(channel_type):
+            return None
+        try:
+            ensure_integration_available(channel_type)
+        except OctopError as exc:
+            row = self._cron_repo.get(self._cron_id)
+            if row is not None and (
+                row.enabled or row.last_status != "blocked" or row.last_error != exc.message
+            ):
+                self._cron_repo.update(self._cron_id, enabled=False)
+                self._cron_repo.set_run_status(
+                    self._cron_id,
+                    ts=int(time.time()),
+                    status="blocked",
+                    error=exc.message,
+                )
+                self._audit_repo.write(
+                    actor=ACTOR_SYSTEM,
+                    action="cron.retired_target_blocked",
+                    target=self._cron_id,
+                    payload=exc.message,
+                )
+            return exc
+        return None

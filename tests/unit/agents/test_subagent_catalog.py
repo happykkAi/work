@@ -194,6 +194,7 @@ def test_bundled_library_non_empty() -> None:
     assert len(catalog.list_summaries()) > 100
     assert len(catalog.list_divisions()) == 19
     assert catalog.get("engineering-software-architect") is not None
+    assert catalog.get("engineering-feishu-integration-developer") is None
 
 
 def test_bundled_library_en_path_exists() -> None:

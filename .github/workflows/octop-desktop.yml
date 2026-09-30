@@ -50,9 +50,9 @@ concurrency:
 
 env:
   # Prefer GitHub upstream on Actions runners (npmmirror is for CN local builds).
-  PBS_BASE_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20251209
-  PBS_TAG: "20251209"
-  PBS_PY: "3.12.12"
+  PBS_BASE_URL: https://github.com/astral-sh/python-build-standalone/releases/download/20260807
+  PBS_TAG: "20260807"
+  PBS_PY: "3.12.13"
 
 jobs:
   frontend:
@@ -60,18 +60,18 @@ jobs:
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.attach_from_run == ''
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
         with:
-          node-version: "24"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
 
       - name: Build frontend → src/octop/dashboard
         run: make build-frontend
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: dashboard-dist
           path: src/octop/dashboard/
@@ -141,7 +141,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
 
       - name: Read package version
         run: |
@@ -150,20 +150,21 @@ jobs:
           echo "OCTOP_VERSION=${VER}" >> "$GITHUB_ENV"
           echo "version=${VER}"
 
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: dashboard-dist
           path: src/octop/dashboard
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.12.13"
+          version: 0.12.19
 
       # GitHub Cache outages must not fail the build — PBS download is cheap enough.
       - name: Cache python-build-standalone downloads
         continue-on-error: true
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: green/.cache
           key: pbs-${{ env.PBS_TAG }}-${{ env.PBS_PY }}-${{ matrix.plat }}
@@ -216,7 +217,7 @@ jobs:
             verify_no_homebrew_dylibs "${staging}/packages" "${{ matrix.plat }}"
           fi
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
         with:
           go-version: "1.25.x"
           cache-dependency-path: desktop/src/go.sum
@@ -293,7 +294,7 @@ jobs:
       # archive: false — upload the prebuilt zip as-is. Default archive=true would
       # wrap it again, so Actions UI / "Download artifact" becomes zip-in-zip.
       # With archive:false, artifact name is the filename (name: is ignored).
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           path: desktop/portable/release/Octop-portable-${{ matrix.plat }}-${{ env.OCTOP_VERSION }}.zip
           archive: false
@@ -301,7 +302,7 @@ jobs:
           retention-days: 14
 
       - name: Upload bundled desktop package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           path: desktop/src/bin/Octop-desktop-${{ matrix.plat }}-${{ env.OCTOP_VERSION }}.*
           archive: false
@@ -313,6 +314,7 @@ jobs:
     needs: package
     # always(): still run when package was skipped (attach_from_run rebuild skip).
     if: >-
+      github.repository == 'TencentCloud/Octop' &&
       always() &&
       !cancelled() &&
       (needs.package.result == 'success' || needs.package.result == 'skipped') &&
@@ -349,7 +351,7 @@ jobs:
       # v8 required for archive:false artifacts. skip-decompress keeps the
       # uploaded .zip / .tar.gz / .dmg / .exe intact — default unzip turns portable
       # zips into directories, so files: release-assets/* would skip them.
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: Octop-*
           path: release-assets
@@ -370,7 +372,7 @@ jobs:
           fi
 
       - name: Upload to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           tag_name: ${{ steps.rel.outputs.tag }}
           files: release-assets/*

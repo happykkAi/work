@@ -3,7 +3,7 @@
  * Lives under Agent/Channels — shared by Personalization tab and Experts drawer.
  */
 import { useCallback, useMemo, useState } from "react";
-import { Form, Button, Empty } from "antd";
+import { Alert, Form, Button, Empty, Space } from "antd";
 import { message } from "@/utils/antdMessage";
 
 import { RefreshCw } from "lucide-react";
@@ -124,6 +124,7 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [form] = Form.useForm<ChannelFormValues>();
+  const retiredFeishuChannels = channels.filter((row) => row.kind === "feishu");
 
   const channelByKind = useMemo<Map<ChannelKey, ChannelRow>>(() => {
     const map = new Map<ChannelKey, ChannelRow>();
@@ -376,6 +377,13 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
     }
   }, [editing, deleteChannel]);
 
+  const handleUnbindRetiredChannel = useCallback(
+    async (channelId: string) => {
+      await deleteChannel(channelId, "retiredFeatures.unbound");
+    },
+    [deleteChannel],
+  );
+
   const handleTestFromDrawer = useCallback(async () => {
     const values = form.getFieldsValue(true) as ChannelFormValues;
     const kind = (values.kind ?? editing?.kind) as ChannelKey | undefined;
@@ -415,6 +423,28 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
 
   return (
     <div className={styles.channelsPanel}>
+      <Alert
+        showIcon
+        type="warning"
+        message={t("retiredFeatures.feishuMessage")}
+        description={t("retiredFeatures.feishuHistory")}
+        action={
+          retiredFeishuChannels.length > 0 ? (
+            <Space wrap>
+              {retiredFeishuChannels.map((row) => (
+                <Button
+                  key={row.id}
+                  type="link"
+                  danger
+                  onClick={() => void handleUnbindRetiredChannel(row.id)}
+                >
+                  {t("retiredFeatures.localUnbind")} · {row.name}
+                </Button>
+              ))}
+            </Space>
+          ) : undefined
+        }
+      />
       <div className={styles.channelsToolbar}>
         <span className={styles.channelsStats}>
           {t("channels.statsSummary", {

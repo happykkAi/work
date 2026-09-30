@@ -48,8 +48,11 @@ async def test_oauth_public_routes_and_oidc_kind_share_redirect(
 
     status = await c.get("/api/auth/oauth/status")
     assert status.status_code == 200
-    kinds = {item["kind"] for item in status.json()["providers"]}
+    providers = {item["kind"]: item for item in status.json()["providers"]}
+    kinds = set(providers)
     assert kinds == {"oidc", "feishu", "dingtalk", "wecom"}
+    assert providers["feishu"]["enabled"] is False
+    assert providers["feishu"]["retired"] is True
 
     start = await c.post("/api/auth/oauth/start", json={"kind": "oidc", "redirect_after": "/chat"})
     assert start.status_code == 200
@@ -71,17 +74,30 @@ async def test_oauth_bind_requires_auth_and_providers_are_not_public(client) -> 
     c, _srv, home = client
     await bootstrap_admin(c, home)
     assert (await c.post("/api/auth/oauth/bind/start", json={"kind": "feishu"})).status_code == 401
-    assert (await c.get("/api/auth/oauth/providers/feishu")).status_code == 401
+    retired_unauthenticated = await c.get("/api/auth/oauth/providers/feishu")
+    assert retired_unauthenticated.status_code == 401
     token = await login(c)
     started = await c.post(
         "/api/auth/oauth/bind/start",
         headers=bearer(token),
         json={"kind": "feishu"},
     )
-    # Provider is not configured, so start is a 400 — but it is authenticated.
-    assert started.status_code == 400
+    assert started.status_code == 410
+    assert started.json()["error"]["code"] == "FEATURE_DISABLED"
 
-    for kind in ("feishu", "dingtalk", "wecom"):
+    retired = await c.get("/api/auth/oauth/providers/feishu", headers=bearer(token))
+    assert retired.status_code == 410
+    assert retired.json()["error"]["code"] == "FEATURE_DISABLED"
+    admin_write = await c.put(
+        "/api/auth/oauth/providers/feishu",
+        headers=bearer(token),
+        json={"enabled": True, "client_id": "synthetic", "client_secret": "synthetic"},
+    )
+    assert admin_write.status_code == 410
+    public_login = await c.post("/api/auth/oauth/start", json={"kind": "feishu"})
+    assert public_login.status_code == 410
+    assert public_login.json()["error"]["code"] == "FEATURE_DISABLED"
+    for kind in ("dingtalk", "wecom"):
         config = await c.get(f"/api/auth/oauth/providers/{kind}", headers=bearer(token))
         assert config.status_code == 200
         assert config.json()["kind"] == kind

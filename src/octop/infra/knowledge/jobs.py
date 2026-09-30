@@ -3,19 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
+from octop.infra.errors import OctopError
 from octop.infra.knowledge.chunk import chunk_text
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.files import document_path
-from octop.infra.knowledge.gate import assert_knowledge_usable
+from octop.infra.knowledge.gate import assert_knowledge_model_calls_allowed, assert_knowledge_usable
 from octop.infra.knowledge.index import KnowledgeIndex
-from octop.infra.knowledge.ocr import optional_ocr_extractor
+from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES, load_ocr_config, optional_ocr_extractor
 from octop.infra.knowledge.params import get_advanced_settings
 from octop.infra.knowledge.parse import parse_document
+from octop.infra.work.optional_models import assert_optional_model_allowed
 
 INDEX_CONCURRENCY = 2
 _index_semaphore: asyncio.Semaphore | None = None
+logger = logging.getLogger(__name__)
 
 
 def reset_index_semaphore_for_tests() -> None:
@@ -81,6 +85,26 @@ def reindex_all_documents(services: Any, embedding_model: str) -> None:
 
 def resume_pending_index_jobs(services: Any) -> None:
     """Resume pending work and jobs interrupted by a prior process shutdown."""
-    documents = services.knowledge_repo.resume_pending_documents()
+    settings = getattr(services, "settings_repo", None)
+    excluded_suffixes: tuple[str, ...] = ()
+    if settings is not None:
+        try:
+            assert_knowledge_model_calls_allowed(settings.get)
+        except OctopError:
+            logger.warning("Work remote knowledge indexing is disabled; pending jobs retained")
+            return
+        ocr_config = load_ocr_config(settings.get)
+        if ocr_config.enabled and ocr_config.backend == "remote":
+            try:
+                assert_optional_model_allowed()
+            except OctopError:
+                # PDFs may be scans; retain them without resetting their processing state.
+                excluded_suffixes = (*sorted(OCR_IMAGE_SUFFIXES), ".pdf")
+                logger.warning("Work remote OCR jobs retained; local document indexing continues")
+    documents = (
+        services.knowledge_repo.resume_pending_documents(excluded_suffixes=excluded_suffixes)
+        if excluded_suffixes
+        else services.knowledge_repo.resume_pending_documents()
+    )
     for document in documents:
         enqueue_index_document(services, document.kb_id, document.id)

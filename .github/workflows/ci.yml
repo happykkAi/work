@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 # Pull requests only. GitHub runs PR checks on the merge result, so a push
 # build on main would re-test content that the release / feature PR already
 # proved green.
@@ -20,14 +23,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12"]
+        python-version: ["3.12.13"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
         with:
           enable-cache: true
           python-version: ${{ matrix.python-version }}
+          version: 0.12.19
 
       - name: Install dependencies
         run: make install
@@ -42,16 +46,17 @@ jobs:
         run: make test
 
   test-windows:
-    name: Windows / Python 3.12
+    name: Windows / Python 3.12.13
     runs-on: windows-latest
     if: ${{ !startsWith(github.head_ref, 'chore/sync-develop-after-') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.12.13"
+          version: 0.12.19
 
       - name: Install dependencies
         run: make install
@@ -70,15 +75,17 @@ jobs:
     runs-on: ubuntu-latest
     # Only the main repo may access secrets; fork PRs get none and must skip.
     if: >-
+      github.repository == 'TencentCloud/Octop' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !startsWith(github.head_ref, 'chore/sync-develop-after-')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
         with:
           enable-cache: true
-          python-version: "3.12"
+          python-version: "3.12.13"
+          version: 0.12.19
 
       - name: Install dependencies
         run: make install
@@ -124,6 +131,4 @@ jobs:
           WEIXIN_BOT_UIN: ${{ secrets.LIVE_WEIXIN_BOT_UIN }}
           WEIXIN_TOKEN: ${{ secrets.LIVE_WEIXIN_TOKEN }}
           WEIXIN_BASE_URL: ${{ secrets.LIVE_WEIXIN_BASE_URL }}
-          FEISHU_APP_ID: ${{ secrets.LIVE_FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.LIVE_FEISHU_APP_SECRET }}
         run: make test-live

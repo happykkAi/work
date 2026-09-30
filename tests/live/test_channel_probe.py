@@ -1,4 +1,4 @@
-"""Live channel credential probes (WeChat iLink + Feishu).
+"""Live WeChat iLink credential probe.
 
 Exercises the same ``ChannelManager.probe_channel`` path the dashboard uses
 via ``Gateway.probe_config`` / ``POST …/channels/test`` — so a green result
@@ -29,21 +29,6 @@ _DEFAULT_WEIXIN_BASE_URL = "https://ilinkai.weixin.qq.com"
 
 async def _noop_processor(_msg: object) -> None:
     return None
-
-
-@pytest.mark.asyncio
-async def test_feishu_probe_accepts_app_credentials() -> None:
-    """Feishu ``start()`` refreshes tenant_access_token — validates app id/secret."""
-    app_id = require_env("FEISHU_APP_ID")
-    app_secret = require_env("FEISHU_APP_SECRET")
-
-    manager = ChannelManager(processor=_noop_processor)
-    await manager.probe_channel(
-        "feishu",
-        {"app_id": app_id, "app_secret": app_secret},
-        tenant_id="live-probe",
-        channel_id="live-feishu-probe",
-    )
 
 
 @pytest.mark.asyncio

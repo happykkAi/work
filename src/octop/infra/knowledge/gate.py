@@ -14,6 +14,7 @@ from octop.infra.agents.providers.onnx_service import (
     require_embedding_prerequisites_for_model,
 )
 from octop.infra.knowledge.params import get_advanced_settings
+from octop.infra.work.optional_models import assert_optional_model_allowed
 
 _FEATURE_ENABLED_KEY = "knowledge_bases_enabled"
 _EMBEDDING_BACKEND_KEY = "knowledge_embedding_backend"
@@ -137,8 +138,14 @@ def set_feature_enabled(
 
 def assert_knowledge_usable(settings_get: SettingsGet, provider_repo: Any = None) -> None:
     """Raise a distinguishable runtime error when the capability cannot be used."""
+    assert_knowledge_model_calls_allowed(settings_get)
     capability = get_capability(settings_get, provider_repo)
     if not capability["feature_enabled"]:
         raise RuntimeError("knowledge feature is disabled")
     if not capability["prerequisites_ok"]:
         raise RuntimeError("knowledge embedding prerequisites are not satisfied")
+
+
+def assert_knowledge_model_calls_allowed(settings_get: SettingsGet) -> None:
+    if (settings_get(_EMBEDDING_BACKEND_KEY) or "onnx").strip().lower() == "remote":
+        assert_optional_model_allowed()

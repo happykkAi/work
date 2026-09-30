@@ -71,6 +71,7 @@ from octop.infra.connectors.builder import (
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import is_retired_integration
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
 from octop.infra.skills.skill_package_store import SkillPackageStore
 from octop.infra.skills.workspace_catalog import (
@@ -345,6 +346,8 @@ class AgentManager:
         config: OctopConfig | None = None,
         expert_catalog: ExpertCatalog | None = None,
         plugin_manager: PluginManager | None = None,
+        work_control_plane: Any | None = None,
+        work_execution_required: bool = False,
     ) -> None:
         self._repos = repos
         self._paths = paths
@@ -353,6 +356,8 @@ class AgentManager:
         self._config = config or _OctopConfig()
         self._expert_catalog = expert_catalog
         self._plugin_manager = plugin_manager
+        self._work_control_plane = work_control_plane
+        self._work_execution_required = work_execution_required
         self._cron_manager: CronManager | None = None
         self._proactive_scheduler: ProactiveCareScheduler | None = None
         self._team_processor: Any | None = None
@@ -533,6 +538,14 @@ class AgentManager:
     @property
     def harness_manager(self) -> HarnessAgentManager | None:
         return self._harness_manager
+
+    @property
+    def work_control_plane(self) -> Any | None:
+        return self._work_control_plane
+
+    @property
+    def work_execution_required(self) -> bool:
+        return self._work_execution_required
 
     @property
     def octop_config(self) -> OctopConfig:
@@ -1223,6 +1236,13 @@ class AgentManager:
 
     async def stream(self, agent_id: str, request: dict[str, Any]) -> AsyncIterator[Any]:
         """Stream harness chunks (Langfuse tracing handled inside octop-harness)."""
+        if getattr(self, "_work_execution_required", False):
+            from octop.infra.work.execution import require_work_execution  # noqa: PLC0415
+
+            await require_work_execution(
+                agent_id=agent_id,
+                thread_id=str(request.get("thread_id") or ""),
+            )
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
 
@@ -1240,6 +1260,13 @@ class AgentManager:
 
     async def call(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
         """Non-streaming harness invocation (one-shot agent call)."""
+        if getattr(self, "_work_execution_required", False):
+            from octop.infra.work.execution import require_work_execution  # noqa: PLC0415
+
+            await require_work_execution(
+                agent_id=agent_id,
+                thread_id=str(request.get("thread_id") or ""),
+            )
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
         async with self._track_invocation(agent_id):
@@ -1259,6 +1286,10 @@ class AgentManager:
         decisions: list[dict[str, Any]],
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
+        if getattr(self, "_work_execution_required", False):
+            from octop.infra.work.execution import require_work_execution  # noqa: PLC0415
+
+            await require_work_execution(agent_id=agent_id, thread_id=thread_id)
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
         async with (
@@ -1430,7 +1461,7 @@ class AgentManager:
         try:
             svc = self._connector_svc
             for inst in self._repos.connector_repo.list_visible(uid):
-                if inst.status != "active":
+                if inst.status != "active" or is_retired_integration(inst.kind):
                     continue
                 await svc.ensure_fresh_credentials(inst.instance_id, inst.kind)
             await self._reload_agent(agent_id)
@@ -3136,6 +3167,10 @@ class AgentManager:
             ),
             OctopUiOffloadMiddleware(),
         ]
+        if self._work_execution_required:
+            from octop.infra.work.middleware import WorkExecutionMiddleware
+
+            agent_middleware.append(WorkExecutionMiddleware())
 
         merged_tools: list[Any] = []
         if cron_tools:
@@ -3267,6 +3302,18 @@ class AgentManager:
             **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
         )
+        if self._work_execution_required:
+            # Harness nested subagents do not inherit the parent middleware, and
+            # background memory extraction has no Work budget scope yet.
+            harness_cfg = replace(
+                harness_cfg,
+                subagents=[],
+                subagents_auto_load=False,
+                team_enabled=False,
+                memory_enabled=False,
+                memory_aux_model_enabled=False,
+                memory_extract_on_session_end=False,
+            )
         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
             from octop.infra.agents.settings.tool_catalog import effective_tools_disabled
             from octop.infra.agents.teams import host_tools_disabled

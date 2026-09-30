@@ -121,7 +121,7 @@ async def test_create_channel_rejects_name_taken_by_other_kind(tmp_path: Path) -
             channel_id=new_ulid(),
             agent_id=agent_id,
             user_id=user_id,
-            kind="feishu",
+            kind="weixin",
             name="shared",
             config={},
         )
@@ -132,7 +132,7 @@ async def test_create_channel_rejects_name_taken_by_other_kind(tmp_path: Path) -
                 channel_id=new_ulid(),
                 agent_id=agent_id,
                 user_id=user_id,
-                kind="weixin",
+                kind="qq",
                 name="shared",
                 config={},
             )

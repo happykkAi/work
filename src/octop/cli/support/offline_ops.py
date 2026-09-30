@@ -19,6 +19,7 @@ from octop.infra.cron.task_type import normalize_cron_task_type, require_cron_pr
 from octop.infra.cron.trigger import build_trigger
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.retired_integrations import ensure_integration_available, is_retired_integration
 from octop.infra.users.password import hash_password
 from octop.infra.utils.ulid import new_cron_id, new_ulid
 
@@ -449,6 +450,7 @@ def create_channel_offline(
     config: dict[str, Any],
     home: Path | None = None,
 ) -> dict[str, Any]:
+    ensure_integration_available(kind)
     channel_id = new_ulid()
     with open_cli_services(home) as svc:
         if svc.agent_repo.get(agent_id) is None:
@@ -479,6 +481,10 @@ def patch_channel_offline(
         row = svc.channel_repo.get(channel_id)
         if row is None or row.agent_id != agent_id:
             raise OctopError(ErrorCode.NOT_FOUND, f"channel {channel_id!r} not found")
+        if is_retired_integration(row.kind) and not (
+            enabled is False and name is None and config is None
+        ):
+            ensure_integration_available(row.kind)
         svc.channel_repo.update(
             channel_id,
             name=name,

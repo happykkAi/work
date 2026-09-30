@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 import shutil
 import uuid
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from multiprocessing import get_context
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -24,6 +26,31 @@ from tests.support.postgresql import requires_postgresql
 
 def _conninfo() -> str:
     return os.environ["OCTOP_TEST_DATABASE_URL"]
+
+
+def _consume_handoff_process(args):
+    from octop.infra.work.control_plane import WorkControlPlane
+
+    conninfo, binding, handoff = args
+    control = WorkControlPlane(conninfo, binding.runtime_id, expected_runtime_binding=binding)
+    try:
+        return os.getpid(), control.consume_runtime_handoff(handoff) is not None
+    finally:
+        control.close()
+
+
+def _start_second_executor(args):
+    from octop.infra.work.control_plane import WorkControlPlane
+
+    conninfo, binding, context = args
+    control = WorkControlPlane(conninfo, binding.runtime_id, expected_runtime_binding=binding)
+    try:
+        activated = control.activate_run(context)
+        control.block_run(context)
+        control.finish_run(context, "completed")
+        return os.getpid(), activated
+    finally:
+        control.close()
 
 
 def _reset_public_schema(pool: object) -> None:
@@ -45,6 +72,71 @@ def _pg_payload_from_url(url: str) -> dict[str, object]:
         "password": parsed.password or "",
         "url": url,
     }
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_current_work_schema_starts_with_restricted_role() -> None:
+    import psycopg
+    from psycopg import sql
+    from psycopg.conninfo import make_conninfo
+
+    from octop.infra.db.migrate import run_migrations
+    from octop.infra.db.pool import PostgresPool
+    from octop.infra.work.control_plane import WorkControlPlane
+    from octop.infra.work.permissions import provision_principal
+
+    role = "work_test_" + uuid.uuid4().hex
+    password = uuid.uuid4().hex
+    setup = PostgresPool(_conninfo())
+    try:
+        _reset_public_schema(setup)
+        run_migrations(setup)
+    finally:
+        setup.close()
+    owner = WorkControlPlane(_conninfo(), "migration-owner")
+    owner.close()
+    with psycopg.connect(_conninfo(), autocommit=True) as admin:
+        admin.execute(
+            sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                sql.Identifier(role), sql.Literal(password)
+            )
+        )
+        try:
+            admin.execute(
+                sql.SQL("GRANT USAGE ON SCHEMA public TO {}").format(sql.Identifier(role))
+            )
+            admin.execute(
+                sql.SQL(
+                    "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO {}"
+                ).format(sql.Identifier(role))
+            )
+            restricted = make_conninfo(_conninfo(), user=role, password=password)
+            provision_principal(_conninfo(), role, kind="entry", runtime_id="restricted-runtime")
+            pool = PostgresPool(restricted)
+            try:
+                run_migrations(pool)
+                from octop.infra.db.repos.settings import SettingsRepo
+
+                settings = SettingsRepo(pool)
+                settings.revoke_session("expired-test", 1, 0)
+                settings.revoke_session("live-test", 100, 2)
+                assert settings.get("auth.revoked.expired-test") is None
+                assert settings.get("auth.revoked.live-test") == "100"
+            finally:
+                pool.close()
+            control = WorkControlPlane(restricted, "restricted-runtime")
+            control.close()
+            with psycopg.connect(restricted, autocommit=True) as runtime:
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    runtime.execute("UPDATE work_organization_policies SET available=TRUE")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    runtime.execute("CREATE TABLE public.forbidden_runtime_ddl(id INTEGER)")
+                with pytest.raises(psycopg.errors.InsufficientPrivilege):
+                    runtime.execute("ALTER TABLE work_schema_version ADD COLUMN forbidden INTEGER")
+        finally:
+            admin.execute(sql.SQL("DROP OWNED BY {}").format(sql.Identifier(role)))
+            admin.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(role)))
 
 
 @requires_postgresql
@@ -340,3 +432,328 @@ def test_pg_knowledge_base_max_documents_schema_and_crud() -> None:
         assert fetched.max_documents == 200
     finally:
         pool.close()
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_work_control_plane_revocation_and_restart_block_pending_execution() -> None:
+    """Persisted membership, local runtime resources, and restart state fail closed."""
+    from work_platform.authorization import (
+        WorkAccessDenied,
+        authorize_external,
+        issue_execution_context,
+    )
+    from work_platform.runtime_adapter import RuntimeBinding
+    from work_platform.runtime_handoff import issue_runtime_handoff, verify_runtime_handoff
+
+    from octop.infra.db.pool import PostgresPool
+    from octop.infra.work.control_plane import WorkControlPlane
+
+    conninfo = _conninfo()
+    setup = PostgresPool(conninfo)
+    try:
+        _reset_public_schema(setup)
+    finally:
+        setup.close()
+
+    local_binding = RuntimeBinding(
+        "org-a",
+        "runtime-a",
+        "octop_runtime_org_a",
+        "org-a-data",
+        "org-a-database-url",
+        "https://runtime-a.internal:8088",
+        "org-a-handoff",
+    )
+    control = WorkControlPlane(conninfo, "runtime-a", expected_runtime_binding=local_binding)
+    try:
+        with control._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO work_users(work_user_id, status) VALUES (?, 'active')", ("user-a",)
+            )
+            conn.execute(
+                "INSERT INTO work_users(work_user_id, status) VALUES (?, 'active')", ("user-b",)
+            )
+            conn.execute(
+                "INSERT INTO work_identities(runtime_id, octop_user_id, work_user_id, status) "
+                "VALUES ('work-entry', 7, 'user-a', 'active'), "
+                "('runtime-a', 41, 'user-a', 'active'), "
+                "('runtime-b', 42, 'user-b', 'active')"
+            )
+            conn.execute(
+                "INSERT INTO work_memberships(organization_id, work_user_id, role, status, revision) "
+                "VALUES ('org-a', 'user-a', 'member', 'active', 1), "
+                "('org-b', 'user-b', 'member', 'active', 1)"
+            )
+            conn.execute(
+                "INSERT INTO work_organization_policies(organization_id, revision, available) "
+                "VALUES ('org-a', 1, TRUE), ('org-b', 1, TRUE)"
+            )
+            conn.execute(
+                "INSERT INTO work_agent_bindings(agent_id, organization_id, runtime_id, "
+                "database_role, volume_id, secret_ref, endpoint, handoff_secret_ref, status) VALUES "
+                "('agent-a', 'org-a', 'runtime-a', 'octop_runtime_org_a', 'org-a-data', "
+                "'org-a-database-url', 'https://runtime-a.internal:8088', 'org-a-handoff', "
+                "'active'), "
+                "('agent-b', 'org-b', 'runtime-b', 'octop_runtime_org_b', 'org-b-data', "
+                "'org-b-database-url', 'https://runtime-b.internal:8088', 'org-b-handoff', "
+                "'active')"
+            )
+            conn.execute(
+                "INSERT INTO work_capabilities(organization_id, capability, enabled, billable) "
+                "VALUES ('org-a', 'model:local_stub', TRUE, TRUE)"
+            )
+
+        assert control.resolve_grant(41, "agent-a") is not None
+        assert control.resolve_grant(41, "agent-b") is None
+        assert control.resolve_runtime_grant("user-a", "agent-a") is not None
+        entry = WorkControlPlane(conninfo, "work-entry")
+        try:
+            routed = entry.resolve_entry_grant(7, "agent-a")
+            assert routed is not None and routed.runtime == local_binding
+            assert entry.resolve_entry_grant(7, "agent-b") is None
+        finally:
+            entry.close()
+        handoff_secret = b"org-a-handoff-secret-org-a-000000"
+        handoff_token = issue_runtime_handoff(
+            local_binding,
+            work_user_id="user-a",
+            agent_id="agent-a",
+            connection_id="a" * 32,
+            secret=handoff_secret,
+        )
+        handoff = verify_runtime_handoff(
+            handoff_token,
+            runtime_id="runtime-a",
+            secret=handoff_secret,
+        )
+        with ProcessPoolExecutor(
+            max_workers=2, mp_context=get_context("spawn"), max_tasks_per_child=1
+        ) as executor:
+            consumed = list(
+                executor.map(_consume_handoff_process, [(conninfo, local_binding, handoff)] * 2)
+            )
+        assert len({pid for pid, _ in consumed}) == 2
+        assert sum(accepted for _, accepted in consumed) == 1
+        restarted_handoff = WorkControlPlane(
+            conninfo, "runtime-a", expected_runtime_binding=local_binding
+        )
+        try:
+            assert restarted_handoff.consume_runtime_handoff(handoff) is None
+        finally:
+            restarted_handoff.close()
+        context, resolved = issue_execution_context(
+            control,
+            octop_user_id=41,
+            agent_id="agent-a",
+            run_id="run-a",
+            budget_scope_id="thread-a",
+            connection_id="a" * 32,
+        )
+        assert resolved == local_binding
+        assert control.activate_run(context) is True
+        assert control.reserve_attempt(context, "model:local_stub", "attempt-a") is True
+        # Starting another OS process must neither recover this live run nor own it.
+        with ProcessPoolExecutor(
+            max_workers=2, mp_context=get_context("spawn"), max_tasks_per_child=1
+        ) as executor:
+            competing = list(
+                executor.map(_start_second_executor, [(conninfo, local_binding, context)] * 2)
+            )
+        assert len({pid for pid, _ in competing}) == 2
+        assert all(pid != os.getpid() and activated is False for pid, activated in competing)
+        assert control.context_is_current(context) is True
+        with control._db.connect() as conn:
+            assert (
+                conn.execute(
+                    "SELECT status FROM work_external_attempts WHERE attempt_id='attempt-a'"
+                ).fetchone()["status"]
+                == "reserved"
+            )
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            reserved = list(
+                executor.map(
+                    lambda attempt: control.reserve_attempt(context, "model:local_stub", attempt),
+                    [f"attempt-race-{index}" for index in range(40)],
+                )
+            )
+        assert sum(reserved) == 19
+        with control._db.connect() as conn:
+            counters = conn.execute(
+                "SELECT scope_kind, used FROM work_budget_counters ORDER BY scope_kind"
+            ).fetchall()
+        assert {row["scope_kind"]: row["used"] for row in counters} == {
+            "organization": 20,
+            "task": 20,
+            "user": 20,
+        }
+
+        # Task is the stable legacy thread, not a fresh allowance every UTC day.
+        with control._db.transaction() as conn:
+            conn.execute(
+                "UPDATE work_budget_counters SET utc_day=utc_day - 1 WHERE scope_kind='task'"
+            )
+        assert control.reserve_attempt(context, "model:local_stub", "attempt-next-day") is False
+        with control._db.connect() as conn:
+            assert (
+                conn.execute(
+                    "SELECT attempt_id FROM work_external_attempts WHERE attempt_id='attempt-next-day'"
+                ).fetchone()
+                is None
+            )
+
+        terminal, _ = issue_execution_context(
+            control,
+            octop_user_id=41,
+            agent_id="agent-a",
+            run_id="terminal-run",
+            budget_scope_id="terminal-thread",
+            connection_id="a" * 32,
+        )
+        assert control.activate_run(terminal)
+        assert control.reserve_attempt(terminal, "model:local_stub", "terminal-attempt")
+        control.finish_run(terminal, "failed")
+
+        with control._db.transaction() as conn:
+            conn.execute(
+                "UPDATE work_memberships SET status='removed', revision=2 "
+                "WHERE organization_id='org-a' AND work_user_id='user-a'"
+            )
+        assert control.resolve_grant(41, "agent-a") is None
+        assert control.resolve_runtime_grant("user-a", "agent-a") is None
+        assert control.context_is_current(context) is False
+        # A lost PostgreSQL session cannot reconnect and regain old execution rights.
+        with control._db.transaction() as conn:
+            conn.execute("SELECT pg_terminate_backend(?)", (control._executor.info.backend_pid,))
+        assert control.context_is_current(context) is False
+        replacement = WorkControlPlane(
+            conninfo, "runtime-a", expected_runtime_binding=local_binding
+        )
+        try:
+            control.finish_run(context, "completed")
+            control.finish_attempt("attempt-a", "completed")
+            with replacement._db.connect() as conn:
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_runs WHERE run_id='terminal-run'"
+                    ).fetchone()["status"]
+                    == "failed"
+                )
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_external_attempts WHERE attempt_id='terminal-attempt'"
+                    ).fetchone()["status"]
+                    == "uncertain"
+                )
+                assert (
+                    conn.execute("SELECT status FROM work_runs WHERE run_id='run-a'").fetchone()[
+                        "status"
+                    ]
+                    == "blocked_restart"
+                )
+                assert (
+                    conn.execute(
+                        "SELECT status FROM work_external_attempts WHERE attempt_id='attempt-a'"
+                    ).fetchone()["status"]
+                    == "uncertain"
+                )
+        finally:
+            replacement.close()
+    finally:
+        control.close()
+
+    restarted = WorkControlPlane(conninfo, "runtime-a", expected_runtime_binding=local_binding)
+    try:
+        with restarted._db.connect() as conn:
+            run = conn.execute(
+                "SELECT status, connection_id FROM work_runs WHERE run_id='run-a'"
+            ).fetchone()
+            attempt = conn.execute(
+                "SELECT status FROM work_external_attempts WHERE attempt_id='attempt-a'"
+            ).fetchone()
+        assert run is not None and run["status"] == "blocked_restart"
+        assert run["connection_id"] == "a" * 32
+        assert attempt is not None and attempt["status"] == "uncertain"
+
+        sent: list[str] = []
+        with pytest.raises(WorkAccessDenied):
+            authorize_external(
+                context,
+                "model:local_stub",
+                restarted,
+                attempt_id="attempt-after-restart",
+                operation=lambda: sent.append("called"),
+            )
+        assert sent == []
+        assert restarted.resolve_grant(41, "agent-a") is None
+    finally:
+        restarted.close()
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_work_control_plane_v3_to_v7_migration_is_repeatable() -> None:
+    from octop.infra.db.pool import PostgresPool
+    from octop.infra.work.control_plane import WorkControlPlane
+
+    conninfo = _conninfo()
+    setup = PostgresPool(conninfo)
+    try:
+        _reset_public_schema(setup)
+    finally:
+        setup.close()
+
+    fresh = WorkControlPlane(conninfo, "runtime-a")
+    fresh.close()
+    setup = PostgresPool(conninfo)
+    try:
+        with setup.transaction() as conn:
+            conn.execute("DROP TABLE work_runtime_handoffs")
+            conn.execute("ALTER TABLE work_runs DROP COLUMN connection_id")
+            conn.execute("ALTER TABLE work_runs DROP COLUMN executor_id")
+            conn.execute("DROP TABLE work_executors, work_database_principals CASCADE")
+            conn.execute("DROP FUNCTION IF EXISTS work_principal() CASCADE")
+            for table in (
+                "work_users",
+                "work_identities",
+                "work_memberships",
+                "work_agent_bindings",
+                "work_organization_policies",
+                "work_capabilities",
+                "work_runs",
+                "work_budget_counters",
+                "work_external_attempts",
+            ):
+                conn.execute(f"DROP POLICY IF EXISTS work_read ON {table}")
+            with conn.execute(
+                "SELECT proname, pg_get_function_identity_arguments(oid) AS args "
+                "FROM pg_proc WHERE pronamespace='public'::regnamespace "
+                "AND proname LIKE 'work_%'"
+            ) as cursor:
+                for row in cursor.fetchall():
+                    conn.execute(f"DROP FUNCTION public.{row['proname']}({row['args']}) CASCADE")
+            conn.execute("DELETE FROM work_schema_version")
+            conn.execute("INSERT INTO work_schema_version(version) VALUES (3)")
+    finally:
+        setup.close()
+
+    migrated = WorkControlPlane(conninfo, "runtime-a")
+    migrated.close()
+    repeated = WorkControlPlane(conninfo, "runtime-a")
+    try:
+        with repeated._db.connect() as conn:
+            version = conn.execute(
+                "SELECT MAX(version) AS version FROM work_schema_version"
+            ).fetchone()
+            table = conn.execute(
+                "SELECT to_regclass('public.work_runtime_handoffs') AS table_name"
+            ).fetchone()
+            column = conn.execute(
+                "SELECT is_nullable FROM information_schema.columns "
+                "WHERE table_name='work_runs' AND column_name='connection_id'"
+            ).fetchone()
+        assert version is not None and version["version"] == 7
+        assert table is not None and table["table_name"] == "work_runtime_handoffs"
+        assert column is not None and column["is_nullable"] == "NO"
+    finally:
+        repeated.close()

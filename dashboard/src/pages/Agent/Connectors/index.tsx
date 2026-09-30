@@ -2286,6 +2286,12 @@ export default function ConnectorsPage() {
         />
       }
     >
+      <Alert
+        showIcon
+        type="warning"
+        message={t("retiredFeatures.feishuMessage")}
+        description={t("retiredFeatures.feishuHistory")}
+      />
       {activeTab === "custom" ? (
         <CustomMcpTab focusServerName={customFocusServerName} />
       ) : activeTab === "enabled" ? (

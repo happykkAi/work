@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import ssl
 import sys
 from contextlib import suppress
 from typing import Any
@@ -99,6 +100,25 @@ async def run_foreground(
 
     app = build_app(srv)
     servers: list[uvicorn.Server] = []
+    runtime_binding = (
+        srv.app_runtime.work_control_plane.expected_runtime_binding
+        if srv.app_runtime is not None and srv.app_runtime.work_control_plane is not None
+        else None
+    )
+    server_certfile = plan.ssl_certfile
+    server_keyfile = plan.ssl_keyfile
+    server_ca_file: str | None = None
+    server_cert_reqs = ssl.CERT_NONE
+    if runtime_binding is not None:
+        from octop.infra.work.tls import runtime_mtls_paths  # noqa: PLC0415
+
+        ca_file, cert_file, key_file = runtime_mtls_paths()
+        if plan.dual_listeners:
+            raise RuntimeError("Work runtime mTLS does not allow a plaintext companion listener")
+        server_certfile = str(cert_file)
+        server_keyfile = str(key_file)
+        server_ca_file = str(ca_file)
+        server_cert_reqs = ssl.CERT_REQUIRED
 
     if plan.dual_listeners:
         assert plan.https_port is not None
@@ -139,8 +159,10 @@ async def run_foreground(
             log_level=level,
             workers=worker_count,
             reload=reload,
-            ssl_certfile=plan.ssl_certfile,
-            ssl_keyfile=plan.ssl_keyfile,
+            ssl_certfile=server_certfile,
+            ssl_keyfile=server_keyfile,
+            ssl_ca_certs=server_ca_file,
+            ssl_cert_reqs=server_cert_reqs,
         )
         servers.append(uvicorn.Server(single_config))
 

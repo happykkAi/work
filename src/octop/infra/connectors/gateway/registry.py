@@ -7,7 +7,6 @@ from typing import Any, Protocol
 from octop.infra.connectors.gateway.adapters import (
     baidu_map,
     ctrip_wendao,
-    feishu_cli,
     fliggy,
     meituan_travel,
     qq_mail,
@@ -40,7 +39,6 @@ _ADAPTERS: dict[str, GatewayAdapter] = {
     "tencent-ima": tencent_ima,
     "tencent-news": tencent_news,
     "wechat-reading": wechat_reading,
-    "feishu-cli": feishu_cli,
     "wecom-cli": wecom_cli,
     "weknora": weknora,
 }
@@ -63,6 +61,9 @@ def call_gateway_tool(
     name: str,
     args: dict[str, Any],
 ) -> str:
+    from octop.infra.retired_integrations import ensure_integration_available
+
+    ensure_integration_available(kind)
     adapter = get_gateway_adapter(kind)
     if adapter is None:
         raise ValueError(f"unknown tool: {name}")
@@ -71,6 +72,9 @@ def call_gateway_tool(
 
 def probe_gateway_credentials(kind: str, creds: dict[str, Any]) -> None:
     """Validate credentials against the upstream API (raises on failure)."""
+    from octop.infra.retired_integrations import ensure_integration_available
+
+    ensure_integration_available(kind)
     adapter = get_gateway_adapter(kind)
     if adapter is None:
         raise ValueError(f"unknown gateway connector kind: {kind}")

@@ -8,24 +8,37 @@ import pytest
 from tests.support.fakes import fake_bin_path
 
 from octop.infra.connectors.gateway import cli_install
+from octop.infra.errors import ErrorCode, OctopError
 
 
 def test_cli_install_specs_registered() -> None:
     feishu = cli_install.get_cli_install_spec("feishu-cli")
     wecom = cli_install.get_cli_install_spec("wecom-cli")
-    assert feishu is not None
-    assert feishu.binary == "lark-cli"
-    assert feishu.install_command == "npm install -g @larksuite/cli"
+    assert feishu is None
     assert wecom is not None
     assert wecom.binary == "wecom-cli"
     assert wecom.install_command == "npm install -g @wecom/cli"
     assert cli_install.get_cli_install_spec("tencent-ima") is None
 
 
+def test_feishu_cli_install_is_disabled_before_local_process_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_call(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("retired CLI must not inspect or install lark-cli")
+
+    monkeypatch.setattr(cli_install.shutil, "which", unexpected_call)
+    monkeypatch.setattr(cli_install.subprocess, "run", unexpected_call)
+    for operation in (cli_install.cli_install_status, cli_install.install_connector_cli):
+        with pytest.raises(OctopError) as exc:
+            operation("feishu-cli")
+        assert exc.value.code is ErrorCode.FEATURE_DISABLED
+
+
 def test_install_when_already_present(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli_install.shutil, "which", lambda name: fake_bin_path(name))
     monkeypatch.setattr(cli_install, "_read_version", lambda _path: "1.2.3")
-    out = cli_install.install_connector_cli("feishu-cli")
+    out = cli_install.install_connector_cli("wecom-cli")
     assert out["ok"] is True
     assert out["already_installed"] is True
     assert out["version"] == "1.2.3"
@@ -51,7 +64,7 @@ def test_install_runs_npm(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Non
     def _which(name: str) -> str | None:
         if name == "npm":
             return fake_bin_path("npm")
-        if name in ("lark-cli", "wecom-cli"):
+        if name == "wecom-cli":
             return fake_bin_path(name) if state["installed"] else None
         return None
 
@@ -78,7 +91,7 @@ def test_install_runs_npm(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Non
     monkeypatch.setattr(cli_install.shutil, "which", _which)
     monkeypatch.setattr(cli_install.subprocess, "run", _run)
     monkeypatch.setattr(cli_install, "_read_version", lambda _path: "9.9.9")
-    out = cli_install.install_connector_cli("feishu-cli")
+    out = cli_install.install_connector_cli("wecom-cli")
     assert out["ok"] is True
     assert out["already_installed"] is False
     assert out["version"] == "9.9.9"

@@ -14,6 +14,7 @@ from octop_gateway.models import (
     InboundMessage,
     TextContent,
 )
+from work_platform.runtime_context import ExecutionContext
 
 from octop.api.common.agent import require_agent_row
 from octop.api.common.validators import validate_chat_mcp_servers, validate_chat_skills
@@ -311,6 +312,7 @@ def build_dashboard_inbound(
     turn: ChatTurnBody,
     ws_connection_id: str,
     user_is_admin: bool = False,
+    work_execution_context: ExecutionContext | None = None,
 ) -> InboundMessage:
     metadata: dict[str, Any] = {
         "ws_connection_id": ws_connection_id,
@@ -336,6 +338,8 @@ def build_dashboard_inbound(
         metadata["conversation_mode"] = turn.conversation_mode
     if turn.hitl_policy is not None:
         metadata["hitl_policy"] = turn.hitl_policy.model_dump()
+    if work_execution_context is not None:
+        metadata["work_execution_context"] = work_execution_context
     if prepared.composer_context:
         metadata[COMPOSER_CTX_KEY] = prepared.composer_context
     if prepared.inbound_attachments:

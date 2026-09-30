@@ -420,7 +420,7 @@ def config_channels(agent_id: str | None, as_user: str | None) -> None:
     from octop.cli.support.offline_ops import create_channel_offline, patch_channel_offline
     from octop.infra.errors import OctopError
 
-    kinds = ["feishu", "wecom", "weixin", "qq", "dingtalk", "telegram", "yuanbao"]
+    kinds = ["wecom", "weixin", "qq", "dingtalk", "telegram", "yuanbao"]
     kind = _prompts.select("Channel kind:", choices=kinds)
     name = _prompts.text("Channel name:", default=kind)
     try:
@@ -522,6 +522,7 @@ def feishu_setup(
     retries: int,
 ) -> None:
     """Run Feishu scan-to-create (lark-oapi QR) and save app credentials."""
+    raise click.ClickException("飞书相关功能已停用，历史记录保留")
     from octop.cli.support.feishu_creator import dry_run_feishu_setup, run_feishu_bot_creator
     from octop.cli.support.offline_ops import create_channel_offline, patch_channel_offline
     from octop.infra.errors import OctopError

@@ -33,7 +33,7 @@
 # ---------------------------------------------------------------------------
 # 阶段 1 — 前端构建
 # ---------------------------------------------------------------------------
-FROM node:20-slim AS frontend-builder
+FROM node:24.21.0-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6 AS frontend-builder
 
 ARG NPM_REGISTRY=
 # Node heap ceiling for the vite build. Lower this (e.g. 1024) on low-memory
@@ -61,7 +61,7 @@ RUN NODE_ENV=production NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_
 # ---------------------------------------------------------------------------
 # 阶段 2 — Python 运行时
 # ---------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime
+FROM python:3.12.13-slim@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36 AS runtime
 
 LABEL maintainer="OrcaKit Team"
 LABEL org.opencontainers.image.title="Octop"
@@ -96,7 +96,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /bin/
+RUN python3 -m pip install --no-cache-dir --disable-pip-version-check uv==0.12.19
 
 WORKDIR /app
 
@@ -113,6 +113,8 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
 COPY src/ ./src/
+COPY packages/work_platform/pyproject.toml ./packages/work_platform/pyproject.toml
+COPY packages/work_platform/src/ ./packages/work_platform/src/
 COPY --from=frontend-builder /build/src/octop/dashboard/ ./src/octop/dashboard/
 
 COPY .env.example ./
@@ -125,6 +127,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi; \
     fi \
     && uv sync --frozen --no-dev --extra browser \
+    && uv pip install --no-deps --python /app/.venv packages/work_platform \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* /tmp/*

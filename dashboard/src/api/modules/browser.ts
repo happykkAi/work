@@ -1,5 +1,6 @@
 import { request, getAuthToken } from "../request";
 import { getApiUrl, getWsUrl } from "../config";
+import { createAuthenticatedWebSocket } from "./wsAuth";
 import type {
   BrowserReplayRequest,
   BrowserReplayResponse,
@@ -162,15 +163,11 @@ export const browserApi = {
    *   ... (see browser.py for full WS protocol)
    */
   browserStreamWs: (width = 1280, height = 720): WebSocket => {
-    const token = getAuthToken();
     const params = new URLSearchParams();
     params.set("width", String(width));
     params.set("height", String(height));
-    if (token) {
-      params.set("token", token);
-    }
     const wsUrl = `${getWsUrl("/browser-stream/ws")}?${params.toString()}`;
-    return new WebSocket(wsUrl);
+    return createAuthenticatedWebSocket(wsUrl);
   },
 
   // -- Browser record/replay --

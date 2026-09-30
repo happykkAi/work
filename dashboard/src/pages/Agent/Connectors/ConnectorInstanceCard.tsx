@@ -32,19 +32,27 @@ export function ConnectorInstanceCard({
   const isOwner = user?.id === instance.owner_user_id;
   const ownerLabel =
     instance.owner_display_name || instance.owner_username || "";
+  const retired = instance.retired === true;
   const editable =
+    !retired &&
     instance.can_manage &&
     (catalogEntry != null || (instance.kind === "custom-mcp" && isOwner));
 
   const handleDelete = () => {
     modal.confirm({
-      title: t("connectors.deleteConfirm", { name: instance.display_name }),
-      okText: t("common.delete"),
+      title: retired
+        ? t("retiredFeatures.unbindConfirm", { name: instance.display_name })
+        : t("connectors.deleteConfirm", { name: instance.display_name }),
+      okText: retired ? t("retiredFeatures.localUnbind") : t("common.delete"),
       okButtonProps: { danger: true },
       cancelText: t("common.cancel"),
       onOk: async () => {
         await connectorsApi.deleteInstance(instance.instance_id);
-        message.success(t("connectors.deleteSuccess", "已删除"));
+        message.success(
+          retired
+            ? t("retiredFeatures.unbound")
+            : t("connectors.deleteSuccess", "已删除"),
+        );
         await onChanged();
       },
     });
@@ -108,7 +116,7 @@ export function ConnectorInstanceCard({
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            {instance.can_manage ? (
+            {instance.can_manage && !retired ? (
               <Switch
                 size="small"
                 checked={instance.status === "active"}
@@ -128,7 +136,9 @@ export function ConnectorInstanceCard({
 
       <div className={styles.typeCardFooter}>
         <div className={styles.typeCardHint}>
-          {!instance.has_credentials
+          {retired
+            ? instance.status_message || t("retiredFeatures.feishuMessage")
+            : !instance.has_credentials
             ? t("connectors.noCredentials", "缺少凭证")
             : editable
             ? t("connectors.clickToManage", "点击管理连接")
@@ -140,12 +150,21 @@ export function ConnectorInstanceCard({
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
           >
-            <Tooltip title={t("common.delete")} mouseEnterDelay={0.5}>
+            <Tooltip
+              title={
+                retired ? t("retiredFeatures.localUnbind") : t("common.delete")
+              }
+              mouseEnterDelay={0.5}
+            >
               <button
                 type="button"
                 className={styles.instanceCardDelBtn}
                 onClick={handleDelete}
-                aria-label={t("common.delete")}
+                aria-label={
+                  retired
+                    ? t("retiredFeatures.localUnbind")
+                    : t("common.delete")
+                }
               >
                 <Trash2 size={13} />
               </button>

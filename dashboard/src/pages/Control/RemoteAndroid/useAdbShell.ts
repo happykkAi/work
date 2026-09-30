@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAuthToken } from "../../../api/request";
+import { createAuthenticatedWebSocket } from "../../../api/modules/wsAuth";
 
 export type AdbShellState = "idle" | "connecting" | "connected" | "error";
 
 function buildWsUrl(serial: string, cols: number, rows: number): string {
   const params = new URLSearchParams();
-  const token = getAuthToken();
-  if (token) params.set("token", token);
   params.set("serial", serial);
   params.set("cols", String(cols));
   params.set("rows", String(rows));
@@ -42,7 +40,7 @@ export function useAdbShell() {
       if (!serial) return;
       disconnect();
       setState("connecting");
-      const ws = new WebSocket(
+      const ws = createAuthenticatedWebSocket(
         buildWsUrl(serial, callbacks.cols ?? 120, callbacks.rows ?? 32),
       );
       wsRef.current = ws;

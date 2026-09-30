@@ -116,7 +116,7 @@ build-wheel:
 		uv build --out-dir $(DIST_DIR) . || status=$$?; \
 	else \
 		$(PIP) install --quiet build; \
-		$(PYTHON) -m build --no-isolation --outdir $(DIST_DIR) . || status=$$?; \
+		$(PYTHON) -m build --outdir $(DIST_DIR) . || status=$$?; \
 	fi; \
 	mv $(REPO_ROOT)/pyproject.toml.bak $(REPO_ROOT)/pyproject.toml; \
 	rm -f $(REPO_ROOT)/README.pypi.md; \
@@ -206,6 +206,9 @@ lint:
 	$(RUN) ruff check src tests
 	@echo "[lint] Ruff format check..."
 	$(RUN) ruff format --check src tests
+	@echo "[lint] Work platform Ruff check..."
+	$(RUN) ruff check --config packages/work_platform/pyproject.toml packages/work_platform/src/work_platform tests/work_contracts tools/work
+	$(RUN) ruff format --check --config packages/work_platform/pyproject.toml packages/work_platform/src/work_platform tests/work_contracts tools/work
 
 .PHONY: format
 format:
@@ -217,6 +220,8 @@ format:
 typecheck:
 	@echo "[typecheck] mypy..."
 	$(RUN) mypy src/octop
+	@echo "[typecheck] Work platform mypy..."
+	$(RUN) mypy --config-file packages/work_platform/pyproject.toml packages/work_platform/src/work_platform
 
 .PHONY: test
 test:

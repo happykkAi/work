@@ -491,18 +491,23 @@ class KnowledgeRepo:
             )
         return self.get_document(doc_id)
 
-    def resume_pending_documents(self) -> list[KnowledgeDocumentRow]:
+    def resume_pending_documents(
+        self, *, excluded_suffixes: tuple[str, ...] = ()
+    ) -> list[KnowledgeDocumentRow]:
         """Return pending work after resetting jobs interrupted while processing."""
         ts = now_ts()
+        suffix_filter = " AND lower(filename) NOT LIKE ?" * len(excluded_suffixes)
+        suffix_params = tuple(f"%{suffix.lower()}" for suffix in excluded_suffixes)
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE knowledge_documents "
                 "SET status = 'pending', error_message = '', updated_at = ? "
-                "WHERE status = 'processing' AND is_dir = 0",
-                (ts,),
+                f"WHERE status = 'processing' AND is_dir = 0{suffix_filter}",
+                (ts, *suffix_params),
             )
             rows = conn.execute(
-                "SELECT * FROM knowledge_documents WHERE status = 'pending' AND is_dir = 0 "
-                "ORDER BY kb_id, document_id"
+                f"SELECT * FROM knowledge_documents WHERE status = 'pending' AND is_dir = 0{suffix_filter} "
+                "ORDER BY kb_id, document_id",
+                suffix_params,
             ).fetchall()
         return map_rows(rows, KnowledgeDocumentRow)

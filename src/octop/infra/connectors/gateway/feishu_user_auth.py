@@ -7,10 +7,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from octop.infra.connectors.gateway.cli_dirs import resolve_cli_config_key
 from octop.infra.connectors.gateway.cli_runner import run_cli
 from octop.infra.connectors.gateway.feishu_creds import prepare_feishu_cli_env
-from octop.infra.utils.paths import PathLayout
+from octop.infra.retired_integrations import FEISHU_DISABLED_MESSAGE, ensure_integration_available
 
 # ``docs +search`` requires user identity + ``search:docs:read``.
 # Official guidance for full domain scopes: ``auth login --domain all``
@@ -29,6 +28,7 @@ def start_user_device_login(
     recommend: bool = False,
 ) -> dict[str, Any]:
     """Begin device-code login; return verification_url + device_code (non-blocking)."""
+    ensure_integration_available("feishu-cli")
     binary, env = _prepare(config_dir, app_id=app_id, app_secret=app_secret, default_as="bot")
     argv = [binary, "auth", "login", "--no-wait", "--json"]
     if recommend:
@@ -74,6 +74,7 @@ def complete_user_device_login(
     device_code: str,
 ) -> dict[str, Any]:
     """Finish device-code login and switch default identity to user."""
+    ensure_integration_available("feishu-cli")
     code = str(device_code or "").strip()
     if not code:
         raise ValueError("device_code is required")
@@ -117,57 +118,19 @@ def complete_user_device_login(
 
 
 def read_auth_status(*, binary: str, env: dict[str, str]) -> dict[str, Any]:
+    ensure_integration_available("feishu-cli")
     raw = run_cli([binary, "auth", "status", "--json"], env=env, timeout_s=60.0)
     return _parse_json_object(raw)
 
 
 def live_user_auth_preview(creds: dict[str, Any]) -> dict[str, Any]:
-    """Best-effort live status for dashboard preview (never raises)."""
-    try:
-        app_id = str(creds.get("app_id") or "").strip()
-        app_secret = str(creds.get("app_secret") or "").strip()
-        if not app_id or not app_secret:
-            return {"user_auth_valid": False, "user_auth_needs_reauth": True}
-        cli_key = resolve_cli_config_key(creds)
-        config_dir = PathLayout.from_env().ensure_connector_cli_instance_dir("feishu-cli", cli_key)
-        binary, env = prepare_feishu_cli_env(
-            config_dir, app_id=app_id, app_secret=app_secret, default_as="user"
-        )
-        status = read_auth_status(binary=binary, env=env)
-        user = (
-            status.get("identities", {}).get("user")
-            if isinstance(status.get("identities"), dict)
-            else None
-        )
-        available = isinstance(user, dict) and bool(user.get("available"))
-        token_status = str((user or {}).get("tokenStatus") or "").strip().lower()
-        expires_at = (user or {}).get("expiresAt")
-        refresh_expires_at = (user or {}).get("refreshExpiresAt")
-        needs_reauth = (not available) or token_status in {
-            "expired",
-            "invalid",
-            "missing",
-            "revoked",
-        }
-        search_ok = False
-        if available and not needs_reauth:
-            search_ok = _auth_has_scope(binary=binary, env=env, scope="search:docs:read")
-        return {
-            "user_auth_valid": available and not needs_reauth,
-            "user_auth_needs_reauth": needs_reauth,
-            "user_token_status": token_status or None,
-            "user_token_expires_at": expires_at,
-            "user_refresh_expires_at": refresh_expires_at,
-            "search_docs_scope": search_ok,
-        }
-    except Exception:
-        return {
-            "user_auth_valid": False,
-            "user_auth_needs_reauth": True,
-        }
+    """Return the retired state without reading saved CLI credentials."""
+    del creds
+    return {"disabled": True, "status_message": FEISHU_DISABLED_MESSAGE}
 
 
 def _auth_has_scope(*, binary: str, env: dict[str, str], scope: str) -> bool:
+    ensure_integration_available("feishu-cli")
     try:
         run_cli(
             [binary, "auth", "check", "--scope", scope],

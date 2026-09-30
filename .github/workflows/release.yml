@@ -16,8 +16,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
+  actions: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -29,21 +29,23 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
-      - uses: astral-sh/setup-uv@v4
+      - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
         with:
           enable-cache: true
+          python-version: "3.12.13"
+          version: 0.12.19
 
       - name: Set up Python
-        run: uv python install 3.12
+        run: uv python install 3.12.13
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version: "20"
+          node-version: "24.21.0"
           cache: npm
           cache-dependency-path: dashboard/package-lock.json
 
@@ -57,39 +59,46 @@ jobs:
         run: make build
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: dist
           path: dist/
 
   publish:
     name: Publish to PyPI
+    if: github.repository == 'TencentCloud/Octop'
     needs: build
     runs-on: ubuntu-latest
     environment: pypi
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: dist
           path: dist/
 
       - name: Publish package
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
   github-release:
     name: Create GitHub Release
+    if: github.repository == 'TencentCloud/Octop'
     needs: publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
 
       - name: Download distributions
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: dist
           path: dist/
@@ -127,7 +136,7 @@ jobs:
           fi
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           body_path: .release-notes.md
           files: dist/*
@@ -141,8 +150,11 @@ jobs:
   # must fail this workflow so a missed sync is visible.
   sync-develop:
     name: Trigger sync main into develop
+    if: github.repository == 'TencentCloud/Octop'
     needs: github-release
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
       - name: Dispatch Sync Main Into Develop
         env:
@@ -157,8 +169,11 @@ jobs:
   # 与 sync-develop 并行。Dispatch 失败必须让本 workflow 变红（PyPI 已发布仍如此）。
   trigger-fnos:
     name: Trigger FnOS FPK build
+    if: github.repository == 'TencentCloud/Octop'
     needs: github-release
     runs-on: ubuntu-latest
+    permissions:
+      actions: write
     steps:
       - name: Dispatch Build Octop FPK
         env:

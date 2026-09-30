@@ -14,10 +14,12 @@ from octop.infra.gateway.bot_creators.feishu_runner import (
     start_feishu_creator,
     stop_feishu_creator,
 )
+from octop.infra.retired_integrations import ensure_integration_available
 
 
 def dry_run_feishu_setup(*, agent_id: str, platform: str, channel_id: str | None) -> None:
     """Print what ``feishu-setup`` would do without starting the scan-to-create flow."""
+    ensure_integration_available("feishu")
     click.echo("Dry run — no subprocess or channel writes.")
     click.echo(f"  agent:      {agent_id}")
     click.echo(f"  platform:   {platform}")
@@ -36,6 +38,7 @@ def run_feishu_bot_creator(
     timeout_sec: int = 300,
 ) -> tuple[str, str]:
     """Start creator, poll until credentials ready. Returns (app_id, app_secret)."""
+    ensure_integration_available("feishu")
     proc = start_feishu_creator(platform=platform)
     click.echo("Feishu bot creator started — scan QR in Feishu App when it appears.")
     shown_qr = False

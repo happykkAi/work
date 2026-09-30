@@ -1,0 +1,37 @@
+{
+  "manifest_version": 1,
+  "source_repositories": {
+    "work_fork": {
+      "repository": "happykkAi/work",
+      "ref": "main",
+      "commit_sha": "232030f46c5450801ca87809f8a4da57aefc5a05",
+      "tree_sha": "5aff5ae96c9ed92c21b5d5a97bd2bc7740f12f7d"
+    },
+    "octop_upstream": {
+      "repository": "TencentCloud/Octop",
+      "ref": "main",
+      "commit_sha": "232030f46c5450801ca87809f8a4da57aefc5a05"
+    },
+    "legacy_work": {
+      "repository": "happykkAi/shegongai-agent-lab",
+      "ref": "main",
+      "commit_sha": "535e74b6f7d5a7139bf524bbb290ca03b84a1cf7"
+    }
+  },
+  "protected_local_repairs": {
+    "branch": "fix/cross-system-retirement-20260927",
+    "head_sha": "535e74b6f7d5a7139bf524bbb290ca03b84a1cf7",
+    "changed_file_count": 95,
+    "patch_sha256": "ac11cfdb52a04921cf96cd6b98e872f997e85987d315e74adfc02e1f0adef07a",
+    "untracked_archive_sha256": "f950aeeed566d6864f7b8ac5b596ff251d9286601996446db6d5c9f83d898ff6"
+  },
+  "source_lockfiles": {
+    "uv.lock_sha256": "3ecad1ef86f5e9b588f100df7b7af73859f234be9dbe631da90ed2fa9db7611c",
+    "dashboard/package-lock.json_sha256": "f9a6d5c9aade8078edb9b49b4d50bbfdca7ec6c1a68718ac41dfbdafa2a1745c"
+  },
+  "production_evidence": "UNKNOWN",
+  "notes": [
+    "Local candidate is an exact source-tree snapshot from the work_fork commit; Git ancestry was unavailable over Git smart HTTP.",
+    "Production versions, data counts, migration ledger, capacity, and account-recovery state are not inferred from source files."
+  ]
+}

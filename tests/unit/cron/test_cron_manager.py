@@ -142,6 +142,184 @@ async def test_boot_schedules_enabled_jobs(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_boot_blocks_legacy_feishu_cron_without_deleting_target(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    cid = _cron_id()
+    session_key = ThreadRegistry.make_key(
+        agent_id=aid,
+        channel_type="feishu",
+        channel_subject_id="legacy-chat",
+        channel_chat_type=ThreadRegistry.CHAT_TYPE_DM,
+    )
+    services.repos.cron_repo.create(
+        cron_id=cid,
+        agent_id=aid,
+        user_id=uid,
+        trigger="interval:60",
+        prompt="keep this historical operation",
+        session_key=session_key,
+    )
+    mgr = _make_manager(services)
+
+    await mgr.boot()
+
+    blocked = mgr.get(cid)
+    assert blocked is not None
+    assert blocked.enabled == 0
+    assert blocked.last_status == "blocked"
+    assert "飞书相关功能已停用" in (blocked.last_error or "")
+    assert blocked.prompt == "keep this historical operation"
+    assert blocked.session_key == session_key
+    mgr._scheduler.add_job.assert_not_called()
+    audit = services.repos.audit_repo.query(action="cron.retired_target_blocked", limit=5)
+    assert any(row.target == cid for row in audit)
+
+    restarted = _make_manager(services)
+    await restarted.boot()
+    restarted._scheduler.add_job.assert_not_called()
+    persisted = restarted.get(cid)
+    assert persisted is not None
+    assert persisted.enabled == 0
+    assert persisted.last_status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_new_feishu_cron_before_creating_session(tmp_path: Path) -> None:
+    from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
+
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    gateway = _make_gateway()
+    mgr = _make_manager(services, gateway=gateway)
+    session_key = ThreadRegistry.make_key(
+        agent_id=aid,
+        channel_type="feishu",
+        channel_subject_id="new-chat",
+        channel_chat_type=ThreadRegistry.CHAT_TYPE_DM,
+    )
+
+    with pytest.raises(OctopError) as exc:
+        await mgr.create(
+            cron_id=_cron_id(),
+            agent_id=aid,
+            user_id=uid,
+            trigger="interval:60",
+            prompt="new disabled task",
+            session_key=session_key,
+        )
+
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+    assert exc.value.status == 410
+    assert services.repos.cron_repo.list_all() == []
+    gateway.thread_registry.get_or_create_by_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_now_blocks_legacy_feishu_cron_before_delivery(tmp_path: Path) -> None:
+    from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
+
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    cid = _cron_id()
+    session_key = ThreadRegistry.make_key(
+        agent_id=aid,
+        channel_type="feishu",
+        channel_subject_id="legacy-chat",
+        channel_chat_type=ThreadRegistry.CHAT_TYPE_DM,
+    )
+    services.repos.cron_repo.create(
+        cron_id=cid,
+        agent_id=aid,
+        user_id=uid,
+        trigger="interval:60",
+        prompt="keep this historical operation",
+        session_key=session_key,
+    )
+    mgr = _make_manager(services)
+    mgr._delivery_service.deliver = AsyncMock()
+
+    with pytest.raises(OctopError) as exc:
+        await mgr.run_now(cid, wait=True)
+
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+    assert mgr._delivery_service.deliver.await_count == 0
+    blocked = mgr.get(cid)
+    assert blocked is not None
+    assert blocked.enabled == 0
+    assert blocked.last_status == "blocked"
+    assert blocked.session_key == session_key
+
+
+@pytest.mark.asyncio
+async def test_scheduler_job_blocks_legacy_feishu_before_delivery(tmp_path: Path) -> None:
+    from octop.infra.errors import OctopError  # noqa: PLC0415
+
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    cid = _cron_id()
+    services.repos.cron_repo.create(
+        cron_id=cid,
+        agent_id=aid,
+        user_id=uid,
+        trigger="interval:60",
+        prompt="keep this historical operation",
+        session_key=ThreadRegistry.make_key(
+            agent_id=aid,
+            channel_type="feishu",
+            channel_subject_id="legacy-chat",
+            channel_chat_type=ThreadRegistry.CHAT_TYPE_DM,
+        ),
+    )
+    mgr = _make_manager(services)
+    mgr._delivery_service.deliver = AsyncMock()
+    row = mgr.get(cid)
+    assert row is not None
+
+    with pytest.raises(OctopError):
+        await mgr._make_job(row).run(raise_on_error=True)
+
+    mgr._delivery_service.deliver.assert_not_awaited()
+    blocked = mgr.get(cid)
+    assert blocked is not None
+    assert blocked.enabled == 0
+    assert blocked.last_status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_blocked_feishu_cron_cannot_be_reenabled(tmp_path: Path) -> None:
+    from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
+
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    cid = _cron_id()
+    services.repos.cron_repo.create(
+        cron_id=cid,
+        agent_id=aid,
+        user_id=uid,
+        trigger="interval:60",
+        prompt="keep this historical operation",
+        session_key=ThreadRegistry.make_key(
+            agent_id=aid,
+            channel_type="feishu",
+            channel_subject_id="legacy-chat",
+            channel_chat_type=ThreadRegistry.CHAT_TYPE_DM,
+        ),
+    )
+    mgr = _make_manager(services)
+    await mgr.boot()
+
+    with pytest.raises(OctopError) as exc:
+        await mgr.update(cid, enabled=1)
+
+    assert exc.value.code is ErrorCode.FEATURE_DISABLED
+    blocked = mgr.get(cid)
+    assert blocked is not None
+    assert blocked.enabled == 0
+    assert blocked.last_status == "blocked"
+
+
+@pytest.mark.asyncio
 async def test_boot_skips_disabled_jobs(tmp_path: Path) -> None:
     """boot() must not schedule jobs that have enabled=0."""
     services = _make_services(tmp_path)

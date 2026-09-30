@@ -174,16 +174,24 @@ async def test_pump_pty_drains_fans_out_and_reaps() -> None:
 class _FakeWS:
     """Minimal starlette-WebSocket stand-in for the terminal handler."""
 
-    def __init__(self, server: object, received: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        server: object,
+        received: tuple[str, ...] = (),
+        headers: dict[str, str] | None = None,
+    ) -> None:
         self.app = SimpleNamespace(state=SimpleNamespace(octop_server=server))
+        self.headers = headers or {}
         self.application_state = WebSocketState.CONNECTING
         self._received = list(received)
         self.sent: list[str] = []
         self.close_code: int | None = None
         self.accepted = False
+        self.accepted_subprotocol: str | None = None
 
-    async def accept(self) -> None:
+    async def accept(self, subprotocol: str | None = None) -> None:
         self.accepted = True
+        self.accepted_subprotocol = subprotocol
         self.application_state = WebSocketState.CONNECTED
 
     async def send_text(self, text: str) -> None:
@@ -242,6 +250,21 @@ async def test_ws_missing_token_closes_4001(monkeypatch) -> None:
     await terminal.terminal_ws(ws, agent_id="a1", token=None, cols=80, rows=24)
     assert ws.close_code == 4001
     assert not ws.accepted
+
+
+async def test_ws_accepts_token_from_subprotocol_without_query(monkeypatch) -> None:
+    server, _ = _make_server()
+    _patch_user(monkeypatch)
+    monkeypatch.setattr(terminal, "terminal_supported", lambda: (False, "nope"))
+    ws = _FakeWS(
+        server,
+        headers={"Sec-WebSocket-Protocol": "octop.chat, octop.auth.header.payload.signature"},
+    )
+
+    await terminal.terminal_ws(ws, agent_id="a1", token=None, cols=80, rows=24)
+
+    assert ws.accepted_subprotocol == "octop.chat"
+    assert ws.close_code == 4003
 
 
 async def test_ws_bad_token_closes_4001(monkeypatch) -> None:

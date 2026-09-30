@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import extract_websocket_auth, resolve_user_from_token
 from octop.infra.mobile.adb import find_adb, list_devices
 from octop.infra.users.identity import User
 from octop.infra.users.permissions import user_has_permission
@@ -63,7 +63,13 @@ async def adb_shell_ws(
         await websocket.close(code=4003, reason="adb shell unavailable")
         return
 
-    await websocket.accept()
+    token, accepted_subprotocol = extract_websocket_auth(
+        query_token=token,
+        authorization=websocket.headers.get("Authorization"),
+        protocol_header=websocket.headers.get("Sec-WebSocket-Protocol"),
+        forwarded=False,
+    )
+    await websocket.accept(subprotocol=accepted_subprotocol)
 
     if not token or not token.strip():
         await _send_json(websocket, {"type": "error", "message": "missing token"})

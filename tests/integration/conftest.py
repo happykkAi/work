@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -194,11 +194,16 @@ async def env_with_channel(
     env_with_agent: tuple[httpx.AsyncClient, OctopServer, dict[str, str], str],
 ) -> AsyncIterator[tuple[httpx.AsyncClient, OctopServer, dict[str, str], str, int]]:
     client, srv, auth, agent_id = env_with_agent
-    r = await client.post(
-        f"/api/agents/{agent_id}/channels",
-        headers=auth,
-        json={"kind": "feishu", "name": "main", "config": {"app_id": "x"}},
-    )
+    with patch.object(
+        srv.app_runtime.gateway,
+        "_safe_register_channel",
+        new=AsyncMock(),
+    ):
+        r = await client.post(
+            f"/api/agents/{agent_id}/channels",
+            headers=auth,
+            json={"kind": "discord", "name": "main", "config": {"bot_token": "synthetic"}},
+        )
     r.raise_for_status()
     yield client, srv, auth, agent_id, r.json()["id"]
 

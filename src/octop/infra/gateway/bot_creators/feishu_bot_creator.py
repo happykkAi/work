@@ -38,6 +38,8 @@ from lark_oapi.scene.registration.errors import (
     RegisterAppError,
 )
 
+from octop.infra.retired_integrations import FEISHU_DISABLED_MESSAGE, ensure_integration_available
+
 _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(write_through=True)
@@ -145,6 +147,7 @@ def _open_base_for_brand(tenant_brand: str | None) -> str:
 def _send_greeting(
     app_id: str, app_secret: str, open_id: str, *, open_base: str, greeting: str
 ) -> None:
+    ensure_integration_available("feishu")
     _log_info("greeting", "Sending initial greeting message")
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -224,6 +227,7 @@ def _on_status_change(info: dict[str, Any]) -> None:
 
 def register_feishu_app(*, avatar_url: str = "", greeting: str = "") -> dict[str, Any]:
     """Run ``lark.register_app`` and return finish data (app_id / app_secret / …)."""
+    ensure_integration_available("feishu")
     avatar = avatar_url.strip()
     greeting_text = greeting.strip() or str(_pcfg("default_greeting"))
     app_preset: dict[str, Any] = {"desc": str(_pcfg("app_desc"))}
@@ -289,6 +293,11 @@ def cmd_init() -> None:
 
 
 def cmd_create(avatar_url: str = "", greeting: str = "") -> None:
+    try:
+        ensure_integration_available("feishu")
+    except Exception:
+        _emit_error("create_app", FEISHU_DISABLED_MESSAGE)
+        sys.exit(1)
     platform_label = "Lark" if PLATFORM == "lark" else "飞书"
     _log_info("login", f"Starting {platform_label} scan-to-create flow...")
     try:
@@ -325,44 +334,10 @@ def cmd_cleanup() -> None:
 
 
 def main() -> None:
-    global PLATFORM
-
     if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
         sys.exit(0)
-
-    cmd = sys.argv[1]
-    if cmd == "init":
-        cmd_init()
-        return
-
-    avatar_url = ""
-    greeting = ""
-    args = sys.argv[2:]
-    i = 0
-    while i < len(args):
-        if args[i] == "--avatar-url" and i + 1 < len(args):
-            avatar_url = args[i + 1]
-            i += 2
-        elif args[i] == "--greeting" and i + 1 < len(args):
-            greeting = args[i + 1]
-            i += 2
-        elif args[i] == "--platform" and i + 1 < len(args):
-            p = args[i + 1].lower()
-            if p not in ("feishu", "lark"):
-                _emit_error("main", f"Unsupported platform: {p}, use feishu or lark")
-                sys.exit(1)
-            PLATFORM = p
-            i += 2
-        else:
-            i += 1
-
-    if cmd == "create":
-        cmd_create(avatar_url=avatar_url, greeting=greeting)
-    elif cmd == "cleanup":
-        cmd_cleanup()
-    else:
-        _emit_error("main", f"Unknown command: {cmd}")
-        sys.exit(1)
+    _emit_error("main", FEISHU_DISABLED_MESSAGE)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

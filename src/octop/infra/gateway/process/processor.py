@@ -883,6 +883,51 @@ class GlobalProcessor:
     # IM channels (DingTalk, Feishu, …) stream via __call__ → MessageEvent instead.
 
     async def iter_turn_chunks(self, msg: InboundMessage) -> AsyncIterator[dict[str, Any]]:
+        if getattr(self._agent_manager, "work_execution_required", False) is not True:
+            async for chunk in self._iter_turn_chunks_authorized(msg):
+                yield chunk
+            return
+
+        from work_platform.authorization import WorkAccessDenied
+        from work_platform.capability_policy import CapabilityDenied, PolicyUnavailable
+        from work_platform.runtime_context import ExecutionContext
+
+        from octop.infra.gateway.threads import ThreadRegistry
+        from octop.infra.work.execution import WorkRunOutcome, work_run_scope
+
+        context = (msg.metadata or {}).get("work_execution_context")
+        control_plane = self._agent_manager.work_control_plane
+        agent_id = msg.tenant_id or ""
+        thread_id = str((msg.metadata or {}).get("thread_id") or "")
+        subject_id = getattr(msg.channel_subject, "subject_id", None)
+        if (
+            control_plane is None
+            or not isinstance(context, ExecutionContext)
+            or msg.channel_type != ThreadRegistry.CHANNEL_DASHBOARD
+            or not agent_id
+            or context.agent_id != agent_id
+            or context.octop_user_id is None
+            or str(context.octop_user_id) != str(subject_id)
+            or context.budget_scope_id != thread_id
+        ):
+            yield {"type": "error", "message": "Work execution authorization required"}
+            yield {"type": "done"}
+            return
+
+        outcome = WorkRunOutcome()
+        try:
+            async with work_run_scope(context, control_plane, outcome):
+                async for chunk in self._iter_turn_chunks_authorized(msg):
+                    if chunk.get("type") == "error":
+                        outcome.failed = True
+                    yield chunk
+        except (WorkAccessDenied, CapabilityDenied, PolicyUnavailable) as exc:
+            yield {"type": "error", "message": str(exc)}
+            yield {"type": "done"}
+
+    async def _iter_turn_chunks_authorized(
+        self, msg: InboundMessage
+    ) -> AsyncIterator[dict[str, Any]]:
         """Run one agent turn and yield harness-native stream chunks.
 
         For transports that consume the dashboard chunk protocol (``token``,
@@ -892,6 +937,9 @@ class GlobalProcessor:
         IM channels use :meth:`__call__` → ``project_stream`` → ``MessageEvent``
         (e.g. DingTalk ``BaseChannel.handle_inbound``).
         """
+        from work_platform.authorization import WorkAccessDenied
+        from work_platform.capability_policy import CapabilityDenied, PolicyUnavailable
+
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("messages_total")
@@ -1079,8 +1127,15 @@ class GlobalProcessor:
                 )
                 yield _maybe_stamp_team_host(chunk, agent_id, team_host)
             stream_ok = True
+        except (WorkAccessDenied, CapabilityDenied, PolicyUnavailable) as exc:
+            await self._record_stream_error(user_id=user_id, agent_id=agent_id, exc=exc)
+            raise
         except Exception as exc:
             await self._record_stream_error(user_id=user_id, agent_id=agent_id, exc=exc)
+            if getattr(
+                self._agent_manager, "work_execution_required", False
+            ) is True and isinstance(exc, (WorkAccessDenied, CapabilityDenied, PolicyUnavailable)):
+                raise
             message, error_code = _stream_error(exc, locale)
             payload: dict[str, Any] = {"type": "error", "message": message}
             if error_code:

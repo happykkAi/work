@@ -23,7 +23,7 @@ Server → Client::
   {"type": "session_update", "session_id": "...", "current_url": "...", ...}
   {"type": "error", "message": "..."}
 
-Auth: ``?token=<JWT>`` query param (browsers cannot set Authorization on WS).
+Auth: ``octop.auth.<JWT>`` WebSocket subprotocol, with query-token fallback.
 Listen-only (``?listen_only=1``): still requires ``start``, but never launches
 Chrome — attaches to an existing harness session or pushes idle updates.
 """
@@ -39,7 +39,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import extract_websocket_auth, resolve_user_from_token
 from octop.api.routers.browser.harness import (
     control_owner_for,
     harness_list_tabs,
@@ -338,6 +338,12 @@ async def browser_stream_ws(
     height: int = Query(default=800),
 ) -> None:
     server = websocket.app.state.octop_server
+    token, accepted_subprotocol = extract_websocket_auth(
+        query_token=token,
+        authorization=websocket.headers.get("Authorization"),
+        protocol_header=websocket.headers.get("Sec-WebSocket-Protocol"),
+        forwarded=False,
+    )
     if not token:
         await websocket.close(code=4001, reason="missing token")
         return
@@ -347,7 +353,7 @@ async def browser_stream_ws(
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=accepted_subprotocol)
     sess: Any | None = None
     profile = user_browser_profile(user.id)
     stream_task: asyncio.Task[None] | None = None

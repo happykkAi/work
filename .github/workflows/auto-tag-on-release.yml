@@ -6,22 +6,26 @@ on:
       - closed
 
 permissions:
-  contents: write
-  actions: write
+  contents: read
+  actions: read
 
 jobs:
   tag:
     name: Tag merged release PR
     if: >-
+      github.repository == 'TencentCloud/Octop' &&
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
       (startsWith(github.event.pull_request.head.ref, 'release/') ||
       startsWith(github.event.pull_request.head.ref, 'hotfix/')) &&
       github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: write
+      actions: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout merged main tip
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: main
           fetch-depth: 0

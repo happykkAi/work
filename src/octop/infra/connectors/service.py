@@ -44,6 +44,11 @@ from octop.infra.connectors.oauth.registry import refresh_custom_mcp_oauth
 from octop.infra.db.repos.connectors import ConnectorRepo, ConnectorRow
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.retired_integrations import (
+    FEISHU_DISABLED_MESSAGE,
+    ensure_integration_available,
+    is_retired_integration,
+)
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ulid import new_ulid
 
@@ -141,6 +146,7 @@ class ConnectorService:
         instance_id: str,
         kind: str,
     ) -> dict[str, Any]:
+        ensure_integration_available(kind)
         if kind == "qcc":
             return await self._fresh_qcc(instance_id)
         creds = self.decrypt(instance_id)
@@ -290,14 +296,91 @@ class ConnectorService:
         return extract_servers(self.decrypt(row.instance_id))
 
     def get_custom_servers_for_api(self, user_id: int) -> dict[str, Any]:
-        return redact_servers_for_api(self.get_custom_servers(user_id))
+        servers = redact_servers_for_api(self.get_custom_servers(user_id))
+        return {
+            name: spec
+            for name, spec in servers.items()
+            if not is_retired_integration(name)
+            and not (isinstance(spec, dict) and is_retired_integration(str(spec.get("url") or "")))
+        }
 
     def put_custom_servers(self, user_id: int, servers: dict[str, Any]) -> dict[str, Any]:
         existing = self.get_custom_servers(user_id)
+        for name, spec in servers.items():
+            source = (
+                name
+                if is_retired_integration(name)
+                else str(spec.get("url") or "")
+                if isinstance(spec, dict)
+                else ""
+            )
+            if not is_retired_integration(source):
+                continue
+            old = existing.get(name)
+            if (
+                not isinstance(spec, dict)
+                or not isinstance(old, dict)
+                or not (
+                    is_retired_integration(name)
+                    or is_retired_integration(str(old.get("url") or ""))
+                )
+                or server_enabled(spec)
+                or spec.get("default_open") is True
+                or spec.get("shared") is True
+                or str(spec.get("url") or "") != str(old.get("url") or "")
+            ):
+                ensure_integration_available(source)
         merged = merge_preserved_oauth(servers, existing)
-        return self._save_custom_servers(user_id, merged)
+        for name, old in existing.items():
+            if not isinstance(old, dict) or not (
+                is_retired_integration(name) or is_retired_integration(str(old.get("url") or ""))
+            ):
+                continue
+            disabled = dict(old)
+            disabled["enabled"] = False
+            disabled.pop("default_open", None)
+            disabled.pop("shared", None)
+            merged[name] = disabled
+        return self._save_custom_servers(user_id, merged, allow_retired_existing=True)
 
-    def _save_custom_servers(self, user_id: int, servers: dict[str, Any]) -> dict[str, Any]:
+    def delete_custom_server(self, user_id: int, server_name: str) -> dict[str, Any]:
+        servers = dict(self.get_custom_servers(user_id))
+        if server_name not in servers:
+            raise KeyError(server_name)
+        del servers[server_name]
+        for name, spec in servers.items():
+            if not isinstance(spec, dict) or not (
+                is_retired_integration(name) or is_retired_integration(str(spec.get("url") or ""))
+            ):
+                continue
+            spec["enabled"] = False
+            spec.pop("default_open", None)
+            spec.pop("shared", None)
+        return self._save_custom_servers(user_id, servers, allow_retired_existing=True)
+
+    def _save_custom_servers(
+        self,
+        user_id: int,
+        servers: dict[str, Any],
+        *,
+        allow_retired_existing: bool = False,
+    ) -> dict[str, Any]:
+        for name, spec in servers.items():
+            source = (
+                name
+                if is_retired_integration(name)
+                else str(spec.get("url") or "")
+                if isinstance(spec, dict)
+                else ""
+            )
+            if is_retired_integration(source) and (
+                not allow_retired_existing
+                or not isinstance(spec, dict)
+                or server_enabled(spec)
+                or spec.get("default_open") is True
+                or spec.get("shared") is True
+            ):
+                ensure_integration_available(source)
         normalized = validate_servers_map(
             servers,
             reserved_names=self.reserved_builtin_mcp_names(user_id),
@@ -341,6 +424,7 @@ class ConnectorService:
         issuer: str,
         resource: str | None,
     ) -> dict[str, Any]:
+        ensure_integration_available(server_name)
         servers = dict(self.get_custom_servers(user_id))
         if server_name not in servers:
             raise KeyError(server_name)
@@ -348,6 +432,7 @@ class ConnectorService:
         if not access:
             raise ValueError("missing access_token")
         spec = dict(servers[server_name])
+        ensure_integration_available(str(spec.get("url") or ""))
         spec["oauth"] = build_oauth_storage(tokens, issuer=issuer, resource=resource)
         spec = set_oauth_required_in_spec(spec, required=False)
         servers[server_name] = spec
@@ -358,6 +443,10 @@ class ConnectorService:
         changed = False
         now = int(time.time())
         for name, raw in list(servers.items()):
+            if is_retired_integration(name) or (
+                isinstance(raw, dict) and is_retired_integration(str(raw.get("url") or ""))
+            ):
+                continue
             if not isinstance(raw, dict):
                 continue
             oauth = oauth_tokens_from_spec(raw)
@@ -413,10 +502,12 @@ class ConnectorService:
         default_open: bool | None = None,
         shared: bool | None = None,
     ) -> dict[str, Any]:
+        ensure_integration_available(server_name)
         servers = dict(self.get_custom_servers(user_id))
         if server_name not in servers:
             raise KeyError(server_name)
         spec = dict(servers[server_name])
+        ensure_integration_available(str(spec.get("url") or ""))
         if enabled is not None:
             spec["enabled"] = enabled
             if not enabled:
@@ -441,10 +532,12 @@ class ConnectorService:
         *,
         required: bool,
     ) -> dict[str, Any]:
+        ensure_integration_available(server_name)
         servers = dict(self.get_custom_servers(user_id))
         if server_name not in servers:
             raise KeyError(server_name)
         spec = dict(servers[server_name])
+        ensure_integration_available(str(spec.get("url") or ""))
         servers[server_name] = set_oauth_required_in_spec(spec, required=required)
         return self._save_custom_servers(user_id, servers)
 
@@ -465,17 +558,20 @@ class ConnectorService:
             if is_custom_mcp_kind(inst.kind):
                 continue
             config = ConnectorRepo.parse_config_json(inst)
+            retired = is_retired_integration(inst.kind)
             out.append(
                 {
                     "instance_id": inst.instance_id,
                     "kind": inst.kind,
                     "display_name": inst.display_name,
                     "description": config.get("description"),
-                    "status": inst.status,
+                    "status": "disabled" if retired else inst.status,
+                    "retired": retired,
+                    "status_message": FEISHU_DISABLED_MESSAGE if retired else None,
                     "mcp_server_name": inst.mcp_server_name,
                     "has_credentials": inst.has_credentials,
-                    "default_open": read_default_open(config),
-                    "shared": inst.shared,
+                    "default_open": False if retired else read_default_open(config),
+                    "shared": False if retired else inst.shared,
                     "owner_user_id": inst.user_id,
                     "created_at": inst.created_at,
                     "updated_at": inst.updated_at,
@@ -508,17 +604,32 @@ class ConnectorService:
         for inst in self._repo.list_visible(user_id):
             if is_custom_mcp_kind(inst.kind):
                 continue
-            if inst.status != "active" or not inst.has_credentials:
+            if (
+                inst.status != "active"
+                or not inst.has_credentials
+                or is_retired_integration(inst.kind)
+            ):
                 continue
             names.append(inst.mcp_server_name)
         for name, spec in self.get_custom_servers(user_id).items():
-            if isinstance(spec, dict) and server_enabled(spec):
+            if (
+                isinstance(spec, dict)
+                and server_enabled(spec)
+                and not is_retired_integration(name)
+                and not is_retired_integration(str(spec.get("url") or ""))
+            ):
                 names.append(name)
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
                 continue
             for name, spec in extract_servers(self.decrypt(parent.instance_id)).items():
-                if isinstance(spec, dict) and spec.get("shared") is True and server_enabled(spec):
+                if (
+                    isinstance(spec, dict)
+                    and spec.get("shared") is True
+                    and server_enabled(spec)
+                    and not is_retired_integration(name)
+                    and not is_retired_integration(str(spec.get("url") or ""))
+                ):
                     names.append(shared_mcp_server_name(parent.instance_id, name))
         return sorted(names)
 
@@ -528,12 +639,21 @@ class ConnectorService:
         for inst in self._repo.list_by_user(user_id):
             if is_custom_mcp_kind(inst.kind):
                 continue
-            if inst.status != "active" or not inst.has_credentials:
+            if (
+                inst.status != "active"
+                or not inst.has_credentials
+                or is_retired_integration(inst.kind)
+            ):
                 continue
             if read_default_open(ConnectorRepo.parse_config_json(inst)):
                 names.append(inst.mcp_server_name)
         for name, spec in self.get_custom_servers(user_id).items():
-            if not isinstance(spec, dict) or not server_enabled(spec):
+            if (
+                not isinstance(spec, dict)
+                or not server_enabled(spec)
+                or is_retired_integration(name)
+                or is_retired_integration(str(spec.get("url") or ""))
+            ):
                 continue
             if spec.get("default_open") is True:
                 names.append(name)
@@ -569,6 +689,14 @@ class ConnectorService:
         )
 
     def validate_mcp_servers_for_user(self, user_id: int, names: list[str]) -> list[str]:
+        retired_names = {
+            str(item["mcp_server_name"])
+            for item in self.list_instances_for_api(user_id)
+            if item.get("retired")
+        }
+        for name in names:
+            if is_retired_integration(name) or name in retired_names:
+                ensure_integration_available(name if is_retired_integration(name) else "feishu")
         allowed = set(self.list_active_mcp_server_names(user_id))
         unknown = sorted(set(names) - allowed)
         if unknown:
@@ -576,7 +704,12 @@ class ConnectorService:
         return list(names)
 
     def custom_harness_configs(self, user_id: int) -> dict[str, Any]:
-        configs = enabled_harness_configs(self.get_custom_servers(user_id))
+        configs = {
+            name: spec
+            for name, spec in enabled_harness_configs(self.get_custom_servers(user_id)).items()
+            if not is_retired_integration(name)
+            and not is_retired_integration(str(spec.get("url") or ""))
+        }
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
                 continue
@@ -586,6 +719,8 @@ class ConnectorService:
                     not isinstance(spec, dict)
                     or spec.get("shared") is not True
                     or not server_enabled(spec)
+                    or is_retired_integration(name)
+                    or is_retired_integration(str(spec.get("url") or ""))
                 ):
                     continue
                 built = enabled_harness_configs({name: spec}).get(name)
@@ -646,6 +781,7 @@ class ConnectorService:
         domains: list[str] | None = None,
     ) -> dict[str, Any]:
         """Begin OAuth device-code login (anonymous / pre-save credentials)."""
+        ensure_integration_available("feishu-cli")
         app_id = str(app_id or "").strip()
         app_secret = str(app_secret or "").strip()
         if not app_id or not app_secret:
@@ -670,6 +806,7 @@ class ConnectorService:
         cli_config_key: str,
     ) -> dict[str, Any]:
         """Finish device-code login for pre-save credentials (no instance write)."""
+        ensure_integration_available("feishu-cli")
         app_id = str(app_id or "").strip()
         app_secret = str(app_secret or "").strip()
         device_code = str(device_code or "").strip()
@@ -699,6 +836,7 @@ class ConnectorService:
                 ErrorCode.CONNECTOR_KIND_UNSUPPORTED,
                 "only feishu-cli supports user device login",
             )
+        ensure_integration_available(inst.kind)
         if not inst.has_credentials:
             raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "missing credentials")
         return inst, dict(self.decrypt(instance_id))
@@ -707,6 +845,7 @@ class ConnectorService:
         self, instance_id: str, user_id: int
     ) -> dict[str, Any]:
         """Start device login using App Secret stored on the instance."""
+        ensure_integration_available("feishu-cli")
         _inst, creds = self._require_feishu_cli_instance(instance_id, user_id)
         app_id = str(creds.get("app_id") or "").strip()
         app_secret = str(creds.get("app_secret") or "").strip()
@@ -738,6 +877,7 @@ class ConnectorService:
         cli_config_key: str | None = None,
     ) -> dict[str, Any]:
         """Finish device login and persist ``default_as=user`` on the instance."""
+        ensure_integration_available("feishu-cli")
         _inst, creds = self._require_feishu_cli_instance(instance_id, user_id)
         app_id = str(creds.get("app_id") or "").strip()
         app_secret = str(creds.get("app_secret") or "").strip()

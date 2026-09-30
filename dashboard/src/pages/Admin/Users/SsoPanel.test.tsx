@@ -79,9 +79,11 @@ describe("<SsoPanel />", () => {
     render(<SsoPanel />);
 
     await waitFor(() => expect(getOidcConfig).toHaveBeenCalledOnce());
-    await user.click(
-      screen.getByRole("button", { name: "adminSso.presetGoogle" }),
-    );
+    const preset = screen.getByRole("button", {
+      name: "adminSso.presetGoogle",
+    });
+    await waitFor(() => expect(preset).toBeEnabled());
+    await user.click(preset);
     expect(screen.getByDisplayValue("Google")).toBeInTheDocument();
   });
 });

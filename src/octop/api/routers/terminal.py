@@ -1,11 +1,10 @@
 """Terminal WebSocket — interactive PTY sessions per agent (P1.4).
 
-  WS /api/agents/{agent_id}/terminal/ws?token=<JWT>&session_id=&cols=&rows=
+  WS /api/agents/{agent_id}/terminal/ws?session_id=&cols=&rows=
 
 The shell is spawned with the agent's ``workspace_dir`` as cwd so the
-session lands the user where their files are. Authentication uses a
-``?token=`` query string because browsers can't set ``Authorization``
-on a WebSocket upgrade — the token mirrors the JWT issued at login.
+session lands the user where their files are. Authentication uses the
+``octop.auth.<JWT>`` WebSocket subprotocol, with query-token fallback.
 
 Session persistence (opt-in)
 ----------------------------
@@ -67,7 +66,12 @@ from starlette.websockets import WebSocketState
 
 from octop.api.common.agent import assert_agent_owner
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
-from octop.api.deps import get_server, require_permission, resolve_user_from_token
+from octop.api.deps import (
+    extract_websocket_auth,
+    get_server,
+    require_permission,
+    resolve_user_from_token,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils import posix_compat
@@ -513,7 +517,13 @@ async def terminal_ws(
     """
     server = websocket.app.state.octop_server
 
-    # --- auth (token query param + agent ownership) ---------------------
+    # --- auth (subprotocol token + agent ownership) ---------------------
+    token, accepted_subprotocol = extract_websocket_auth(
+        query_token=token,
+        authorization=websocket.headers.get("Authorization"),
+        protocol_header=websocket.headers.get("Sec-WebSocket-Protocol"),
+        forwarded=False,
+    )
     if not token:
         await websocket.close(code=4001, reason="missing token")
         return
@@ -557,12 +567,12 @@ async def terminal_ws(
 
     supported, unsupported_reason = terminal_supported()
     if not supported:
-        await websocket.accept()
+        await websocket.accept(subprotocol=accepted_subprotocol)
         await websocket.send_text(json.dumps({"type": "error", "message": unsupported_reason}))
         await websocket.close(code=4003, reason="terminal unsupported")
         return
 
-    await websocket.accept()
+    await websocket.accept(subprotocol=accepted_subprotocol)
     logger.info(
         "terminal ws accepted: agent=%s user=%s session_id=%s",
         agent_id,
