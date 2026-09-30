@@ -19,6 +19,7 @@ from octop.infra.agents.providers.model_flags import is_chat_eligible_model, is_
 from octop.infra.agents.providers.probe import build_probe_chat_model
 from octop.infra.utils.llm_text import llm_text_content
 from octop.infra.utils.runtime_packages import PackageInstallSpec, install_packages
+from octop.infra.work.optional_models import assert_optional_model_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -311,9 +312,11 @@ def _extract_local(path: Path) -> str:
 
 class _RemoteOcr:
     def __init__(self, provider: Any, model_id: str) -> None:
+        assert_optional_model_allowed()
         self._model = build_probe_chat_model(provider, model_id=model_id)
 
     def __call__(self, path: Path) -> str:
+        assert_optional_model_allowed()
         parts: list[str] = []
         for data, media_type in _image_inputs(path):
             encoded = base64.b64encode(data).decode("ascii")

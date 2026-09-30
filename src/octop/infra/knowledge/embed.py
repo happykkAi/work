@@ -9,6 +9,7 @@ import httpx
 from octop.infra.agents.providers.onnx_service import embed_texts
 from octop.infra.agents.providers.opencode_session import ensure_opencode_session_header
 from octop.infra.agents.providers.probe import provider_headers
+from octop.infra.work.optional_models import assert_optional_model_allowed
 
 # Remote OpenAI-compatible embedding APIs cap the number of inputs per request.
 _KNOWLEDGE_EMBEDDING_BATCH_LIMIT = 20
@@ -22,6 +23,7 @@ def embed_knowledge_texts(services: Any, texts: list[str]) -> list[list[float]]:
     if backend != "remote":
         return embed_texts(model, texts)
 
+    assert_optional_model_allowed()
     provider_id = (settings.get("knowledge_embedding_provider_id") or "").strip()
     provider = services.provider_repo.get(int(provider_id)) if provider_id.isdigit() else None
     if provider is None or not provider.base_url or not provider.api_key:

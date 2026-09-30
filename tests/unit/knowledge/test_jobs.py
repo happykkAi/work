@@ -193,3 +193,36 @@ def test_resume_pending_index_jobs_resets_processing_and_enqueues(
 
     assert repo.get_document(doc.id).status == "pending"
     assert enqueued == [(kb.id, doc.id)]
+
+
+def test_work_resume_local_text_retains_remote_ocr_jobs(tmp_path, monkeypatch):
+    monkeypatch.setenv("WORK_RUNTIME_ID", "synthetic")
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = KnowledgeRepo(pool)
+    owner = UserRepo(pool).create(username="owner", password_hash="h", role="user")
+    kb = repo.create_base(owner_user_id=owner, name="Docs")
+    text = repo.create_document(
+        kb_id=kb.id,
+        filename="notes.md",
+        content_type="text/markdown",
+        byte_size=5,
+        status="processing",
+    )
+    image = repo.create_document(
+        kb_id=kb.id, filename="scan.PNG", content_type="image/png", byte_size=5, status="processing"
+    )
+    settings = SettingsRepo(pool)
+    settings.set("knowledge_ocr_enabled", "true")
+    settings.set("knowledge_ocr_backend", "remote")
+    services = SimpleNamespace(knowledge_repo=repo, settings_repo=settings)
+    enqueued = []
+    monkeypatch.setattr(
+        jobs,
+        "enqueue_index_document",
+        lambda _services, kb_id, doc_id: enqueued.append((kb_id, doc_id)),
+    )
+    jobs.resume_pending_index_jobs(services)
+    assert repo.get_document(text.id).status == "pending"
+    assert repo.get_document(image.id).status == "processing"
+    assert enqueued == [(kb.id, text.id)]
