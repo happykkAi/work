@@ -30,20 +30,26 @@ def job_block(text, name):
 
 class PublishWorkflowTests(unittest.TestCase):
     def test_work_pipeline_installs_locked_frontend_before_gates(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/work-ci.yml").read_text())
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/work-ci.yml").read_text(encoding="utf-8")
+        )
         commands = [step.get("run", "") for step in workflow["jobs"]["checks"]["steps"]]
         install = next(i for i, command in enumerate(commands) if "npm ci --prefix" in command)
         check = next(i for i, command in enumerate(commands) if "make check-all" in command)
         self.assertLess(install, check)
 
     def test_portable_python_release_and_asset_tag_match(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/octop-desktop.yml").read_text())
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/octop-desktop.yml").read_text(encoding="utf-8")
+        )
         self.assertEqual(
             workflow["env"]["PBS_BASE_URL"].rsplit("/", 1)[1], workflow["env"]["PBS_TAG"]
         )
 
     def test_work_build_binds_target_image_to_checked_source(self):
-        workflow = yaml.safe_load((ROOT / ".github/workflows/work-ci.yml").read_text())
+        workflow = yaml.safe_load(
+            (ROOT / ".github/workflows/work-ci.yml").read_text(encoding="utf-8")
+        )
         commands = "\n".join(step.get("run", "") for step in workflow["jobs"]["checks"]["steps"])
         self.assertIn("--platform linux/amd64", commands)
         self.assertIn('org.opencontainers.image.revision="$GITHUB_SHA"', commands)

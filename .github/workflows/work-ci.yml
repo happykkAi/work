@@ -75,7 +75,7 @@ jobs:
             --label org.opencontainers.image.revision="$GITHUB_SHA" \
             -t work2-candidate:"$GITHUB_SHA" .
           docker run --rm --network none --entrypoint python work2-candidate:"$GITHUB_SHA" \
-            -c 'import octop, work_platform; from work_platform.authorization import issue_execution_context; print(issue_execution_context.__name__)'
+            -c 'import octop, work_platform; from octop.infra.server import OctopServer; from octop.launch import run_foreground_blocking; print("startup-import-ok")'
           docker run --rm --network none --entrypoint uv work2-candidate:"$GITHUB_SHA" \
             pip check --python /app/.venv/bin/python
           docker image inspect work2-candidate:"$GITHUB_SHA" \

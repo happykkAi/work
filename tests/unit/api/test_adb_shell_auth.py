@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 from starlette.websockets import WebSocketState
+from tests.support.fakes import fake_bin_path
 
 from octop.api.routers.mobile import shell_ws
 
@@ -33,7 +34,8 @@ class _FakeWs:
 async def test_adb_shell_accepts_token_from_subprotocol_without_query() -> None:
     ws = _FakeWs()
     with (
-        patch.object(shell_ws, "find_adb", return_value="/bin/true"),
+        patch.object(shell_ws, "os", SimpleNamespace(name="posix")),
+        patch.object(shell_ws, "find_adb", return_value=fake_bin_path("adb")),
         patch.object(shell_ws, "list_devices", return_value=[]),
         patch.object(
             shell_ws,

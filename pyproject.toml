@@ -96,10 +96,11 @@ dev = [
 octop = "octop.cli.main:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/octop"]
+packages = ["src/octop", "packages/work_platform/src/work_platform"]
 
 [tool.hatch.build]
 include = [
+    "packages/work_platform/src/work_platform/**/*.py",
     "src/octop/**/*.py",
     "src/octop/**/*.json",
     "src/octop/**/*.md",
